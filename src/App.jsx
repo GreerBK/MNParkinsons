@@ -215,7 +215,8 @@ function deriveFilterOptionsFromActivities(activities) {
   const typeSet = new Set(), intensitySet = new Set(), costSet = new Set(), formatSet = new Set(), daysSet = new Set()
   activities.forEach(a => {
     if (a.type) (Array.isArray(a.type) ? a.type : [a.type]).forEach(t => t && typeSet.add(String(t).trim()))
-    if (a.intensity) intensitySet.add(String(a.intensity).trim())
+    // Split multi-select values so we only show atomic options (Light, Moderate, Heavy), not "Light, Moderate, Heavy"
+    if (a.intensity) String(a.intensity).split(/[,;]/).map(s => s.trim()).filter(Boolean).forEach(v => intensitySet.add(v))
     if (a.costCategory) costSet.add(String(a.costCategory).trim())
     if (a.format) formatSet.add(String(a.format).trim())
     if (a.daysOfWeek) String(a.daysOfWeek).split(/[,;]/).map(s => s.trim()).filter(Boolean).forEach(d => daysSet.add(d))
@@ -593,6 +594,20 @@ function paramToArray(val) {
 
 const EMPTY_FILTER_OPTIONS = { activityType: [], intensity: [], cost: [], format: [], daysOfWeek: [] }
 
+// Default options so sidebar always shows full lists even when initial results are filtered (e.g. from home page by activity type)
+const DEFAULT_FILTER_OPTIONS = {
+  activityType: ['Boxing', 'Yoga', 'Support Group', 'Exercise'],
+  intensity: ['Light', 'Moderate', 'Heavy'],
+  cost: ['Free', 'Paid', 'Free Trial'],
+  format: ['In-Person', 'Virtual'],
+  daysOfWeek: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
+}
+// Merge data options with defaults so we never show an empty or partial list when landing with a filter
+function mergeOptions(dataOptions, defaultList) {
+  const combined = [...(defaultList || []), ...(dataOptions || [])]
+  return [...new Set(combined)]
+}
+
 function SearchResults({ params }) {
   const [activities, setActivities] = useState([])
   const [loading, setLoading] = useState(true)
@@ -821,11 +836,11 @@ function SearchResults({ params }) {
             )}
           </div>
 
-          <FilterGroupMulti title="Activity Type" options={filterOptions.activityType?.length ? filterOptions.activityType : ['Boxing','Yoga','Support Group','Exercise']} value={selType} onChange={setSelType} />
-          <FilterGroupMulti title="Intensity" options={filterOptions.intensity?.length ? filterOptions.intensity : ['Light','Moderate','Heavy']} value={selIntensity} onChange={setSelIntensity} />
-          <FilterGroupMulti title="Cost" options={filterOptions.cost?.length ? filterOptions.cost : ['Free','Paid','Free Trial']} value={selCost} onChange={setSelCost} />
-          <FilterGroupMulti title="Format" options={filterOptions.format?.length ? filterOptions.format : ['In-Person','Virtual']} value={selFormat} onChange={setSelFormat} />
-          <FilterGroupMulti title="Days of week" options={filterOptions.daysOfWeek?.length ? filterOptions.daysOfWeek : ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']} value={selDays} onChange={setSelDays} />
+          <FilterGroupMulti title="Activity Type" options={mergeOptions(filterOptions.activityType, DEFAULT_FILTER_OPTIONS.activityType)} value={selType} onChange={setSelType} />
+          <FilterGroupMulti title="Intensity" options={mergeOptions(filterOptions.intensity, DEFAULT_FILTER_OPTIONS.intensity)} value={selIntensity} onChange={setSelIntensity} />
+          <FilterGroupMulti title="Cost" options={mergeOptions(filterOptions.cost, DEFAULT_FILTER_OPTIONS.cost)} value={selCost} onChange={setSelCost} />
+          <FilterGroupMulti title="Format" options={mergeOptions(filterOptions.format, DEFAULT_FILTER_OPTIONS.format)} value={selFormat} onChange={setSelFormat} />
+          <FilterGroupMulti title="Days of week" options={mergeOptions(filterOptions.daysOfWeek, DEFAULT_FILTER_OPTIONS.daysOfWeek)} value={selDays} onChange={setSelDays} />
 
           <div className="filter-distance">
             <div className="filter-title">Distance from you</div>
