@@ -32,7 +32,7 @@ function mapRecord(record) {
     })(),
     timeOfDay:        f['Time of Day']            || '',
     intensity:        (() => {
-      const raw = f['Level of Intensity']
+      const raw = f['Intensity'] ?? f['Level of Intensity']
       if (Array.isArray(raw)) return raw.join(', ')
       return raw ? String(raw).trim() : ''
     })(),
@@ -71,7 +71,7 @@ async function fetchActivities(filters = {}) {
   const typeVals = arr(filters.type)
   if (typeVals.length) conditions.push(`OR(${typeVals.map(t => `SEARCH('${String(t).replace(/'/g, "\\'")}', {Activity Type})`).join(',')})`)
   const intensityVals = arr(filters.intensity)
-  if (intensityVals.length) conditions.push(`OR(${intensityVals.map(i => `{Level of Intensity} = '${String(i).replace(/'/g, "\\'")}'`).join(',')})`)
+  if (intensityVals.length) conditions.push(`OR(${intensityVals.map(i => `SEARCH('${String(i).replace(/'/g, "\\'")}', {Intensity})`).join(',')})`)
   const costVals = arr(filters.cost)
   if (costVals.length) conditions.push(`OR(${costVals.map(c => `{Cost Category} = '${String(c).replace(/'/g, "\\'")}'`).join(',')})`)
   const formatVals = arr(filters.format)
@@ -666,9 +666,17 @@ function SearchResults({ params }) {
   useEffect(() => { load() }, [load])
 
   // Fetch filter options from Airtable schema once on mount (PAT may need schema.bases:read scope)
+  // Merge with existing so we never overwrite non-empty options with empty (avoids missing filter options)
   useEffect(() => {
     fetchFilterOptionsFromSchema().then(opts => {
-      if (opts) setFilterOptions(opts)
+      if (!opts) return
+      setFilterOptions(prev => ({
+        activityType: (opts.activityType?.length ? opts.activityType : prev.activityType) || [],
+        intensity: (opts.intensity?.length ? opts.intensity : prev.intensity) || [],
+        cost: (opts.cost?.length ? opts.cost : prev.cost) || [],
+        format: (opts.format?.length ? opts.format : prev.format) || [],
+        daysOfWeek: (opts.daysOfWeek?.length ? opts.daysOfWeek : prev.daysOfWeek) || [],
+      }))
     })
   }, [])
 
@@ -691,6 +699,8 @@ function SearchResults({ params }) {
     const p = new URLSearchParams()
     const zipTrimmed = (zip && String(zip).trim()) || ''
     const zipValid = normalizeZip(zipTrimmed)
+    const qTrimmed = (q && String(q).trim()) || ''
+    if (qTrimmed) p.set('q', qTrimmed)
     if (userCoords) {
       p.set('lat', String(userCoords[0]))
       p.set('lng', String(userCoords[1]))
@@ -812,7 +822,7 @@ function SearchResults({ params }) {
           </div>
 
           <FilterGroupMulti title="Activity Type" options={filterOptions.activityType?.length ? filterOptions.activityType : ['Boxing','Yoga','Support Group','Exercise']} value={selType} onChange={setSelType} />
-          <FilterGroupMulti title="Intensity" options={filterOptions.intensity?.length ? filterOptions.intensity : ['Light','Moderate','High']} value={selIntensity} onChange={setSelIntensity} />
+          <FilterGroupMulti title="Intensity" options={filterOptions.intensity?.length ? filterOptions.intensity : ['Light','Moderate','Heavy']} value={selIntensity} onChange={setSelIntensity} />
           <FilterGroupMulti title="Cost" options={filterOptions.cost?.length ? filterOptions.cost : ['Free','Paid','Free Trial']} value={selCost} onChange={setSelCost} />
           <FilterGroupMulti title="Format" options={filterOptions.format?.length ? filterOptions.format : ['In-Person','Virtual']} value={selFormat} onChange={setSelFormat} />
           <FilterGroupMulti title="Days of week" options={filterOptions.daysOfWeek?.length ? filterOptions.daysOfWeek : ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']} value={selDays} onChange={setSelDays} />
