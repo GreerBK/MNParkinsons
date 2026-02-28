@@ -41,7 +41,7 @@ function mapRecord(record) {
     contact:          f['Program Contact']        || '',
     email:            f['Program Email Address']  || '',
     phone:            f['Site Phone #']           || f['Phone Info'] || '',
-    registrationLink: f['Online Registration Link'] || '',
+    registrationLink: f['Registration Link'] || '',
     website:          f['Online Website']         || f['Info'] || '',
     caregiverFriendly:f['Caregiver Friendly']     || '',
     status:           f['Status']                 || 'Active',
@@ -479,7 +479,6 @@ function Nav() {
 // HOME PAGE
 // ─────────────────────────────────────────────
 function Home() {
-  const [q, setQ] = useState('')
   const [zip, setZip] = useState('')
   const [types, setTypes] = useState([])
   const { coords: userCoords, loading: locLoading, error: locError, requestLocation } = useUserLocation()
@@ -491,7 +490,6 @@ function Home() {
     p.set('lat', String(userCoords[0]))
     p.set('lng', String(userCoords[1]))
     p.set('distance', '50')
-    if (q) p.set('q', q)
     navigate(`#/search?${p.toString()}`)
   }, [userCoords])
 
@@ -510,7 +508,6 @@ function Home() {
   const handleSearch = (e) => {
     e.preventDefault()
     const p = new URLSearchParams()
-    if (q) p.set('q', q)
     if (userCoords) {
       p.set('lat', String(userCoords[0]))
       p.set('lng', String(userCoords[1]))
@@ -530,13 +527,6 @@ function Home() {
         <p>Connecting people with Parkinson's and their caregivers to local activities, support groups, and resources across the state.</p>
 
         <form className="search-box" onSubmit={handleSearch}>
-          <input
-            type="text"
-            placeholder="Search by activity, e.g. Boxing, Yoga..."
-            value={q}
-            onChange={e => setQ(e.target.value)}
-          />
-          <div className="divider" />
           <input
             className="zip-input"
             type="text"
@@ -581,7 +571,8 @@ function Home() {
 
       <footer>
         <strong>MN Parkinson's Connect</strong> — A collaborative initiative of APDA Minnesota &amp; Parkinson's Foundation.<br />
-        <span style={{marginTop:'0.5rem',display:'inline-block'}}>Questions? <a href="mailto:info@mnparkinsons.org" style={{color:'#60A5FA'}}>info@mnparkinsons.org</a></span>
+        <span style={{marginTop:'0.5rem',display:'inline-block'}}>Questions? <a href="mailto:info@mnparkinsons.org" style={{color:'#60A5FA'}}>info@mnparkinsons.org</a></span><br />
+        <span style={{marginTop:'0.5rem',display:'inline-block',opacity:0.9}}>Powered by <a href="https://technextdoormn.com" target="_blank" rel="noopener noreferrer" style={{color:'#60A5FA'}}>Tech Next Door MN</a></span>
       </footer>
     </div>
   )
@@ -700,7 +691,6 @@ function SearchResults({ params }) {
     const p = new URLSearchParams()
     const zipTrimmed = (zip && String(zip).trim()) || ''
     const zipValid = normalizeZip(zipTrimmed)
-    if (q) p.set('q', q)
     if (userCoords) {
       p.set('lat', String(userCoords[0]))
       p.set('lng', String(userCoords[1]))
@@ -744,7 +734,7 @@ function SearchResults({ params }) {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
     }
-  }, [q, zip])
+  }, [zip])
 
   const clearFilters = () => {
     setSelType([]); setSelIntensity([]); setSelCost([])
@@ -785,13 +775,6 @@ function SearchResults({ params }) {
     <div>
       <div className="search-header">
         <div className="search-header-inner">
-          <input
-            type="text"
-            placeholder="Search activities..."
-            value={q}
-            onChange={e => setQ(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && applyFilters()}
-          />
           <input
             className="zip"
             type="text"
@@ -908,7 +891,6 @@ function SearchResults({ params }) {
                 <strong>{activities.length}</strong> {activities.length === 1 ? 'activity' : 'activities'} found
                 {(params.get('lat') && params.get('lng')) ? ' near you' : params.get('zip') ? ` near ${params.get('zip')}` : ''}
                 {((params.get('lat') && params.get('lng')) || params.get('zip')) && ` within ${params.get('distance') || DISTANCE_DEFAULT} mi`}
-                {params.get('q') && ` matching "${params.get('q')}"`}
               </p>
               {activities.length === 0 ? (
                 <div className="state-msg">
@@ -926,7 +908,8 @@ function SearchResults({ params }) {
       </div>
 
       <footer>
-        <strong>MN Parkinson's Connect</strong> — A collaborative initiative of APDA Minnesota &amp; Parkinson's Foundation.
+        <strong>MN Parkinson's Connect</strong> — A collaborative initiative of APDA Minnesota &amp; Parkinson's Foundation.<br />
+        <span style={{marginTop:'0.5rem',display:'inline-block',opacity:0.9}}>Powered by <a href="https://technextdoormn.com" target="_blank" rel="noopener noreferrer" style={{color:'#60A5FA'}}>Tech Next Door MN</a></span>
       </footer>
     </div>
   )
@@ -1077,31 +1060,44 @@ function ActivityDetail({ id }) {
 
           {/* Right sidebar */}
           <div>
-            <div className="sidebar-card">
-              <div style={{fontSize:'0.78rem',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',color:'var(--muted)',marginBottom:'0.5rem'}}>Cost</div>
+            <div className="sidebar-card cost-register-card">
+              <h3 className="sidebar-card-title">Cost</h3>
               <div className="cost-display">
-                {a.costCategory === 'Free' ? 'Free' : a.costDisplay || a.costCategory || '—'}
+                {a.costCategory === 'Free' ? (
+                  <span className="cost-free">Free</span>
+                ) : (
+                  <>
+                    {a.costDisplay && a.costCategory && String(a.costCategory).trim() !== String(a.costDisplay).trim() && (
+                      <span className="cost-category">{a.costCategory}</span>
+                    )}
+                    <span className="cost-detail">{a.costDisplay || a.costCategory || '—'}</span>
+                  </>
+                )}
               </div>
-              {a.costDisplay && a.costCategory && a.costCategory !== a.costDisplay && (
-                <p style={{fontSize:'0.82rem',color:'var(--muted)',marginTop:'0.35rem'}}>{a.costDisplay}</p>
-              )}
-              {a.registrationLink && a.registrationLink !== 'N/A' && (
-                <a
-                  className="register-btn"
-                  href={a.registrationLink.startsWith('http') ? a.registrationLink : `https://${a.registrationLink}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Register / Sign Up ↗
-                </a>
-              )}
+              {(() => {
+                const raw = (a.registrationLink || '').trim()
+                if (!raw || /^(n\/a|na|tbd|-|—)$/i.test(raw)) return null
+                const href = raw.startsWith('http://') || raw.startsWith('https://') ? raw : `https://${raw}`
+                if (href.length < 12 || !href.includes('.')) return null
+                return (
+                  <a
+                    className="register-btn"
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <Icon.link /> Register / Sign up
+                  </a>
+                )
+              })()}
             </div>
           </div>
         </div>
       </div>
 
       <footer>
-        <strong>MN Parkinson's Connect</strong> — A collaborative initiative of APDA Minnesota &amp; Parkinson's Foundation.
+        <strong>MN Parkinson's Connect</strong> — A collaborative initiative of APDA Minnesota &amp; Parkinson's Foundation.<br />
+        <span style={{marginTop:'0.5rem',display:'inline-block',opacity:0.9}}>Powered by <a href="https://technextdoormn.com" target="_blank" rel="noopener noreferrer" style={{color:'#60A5FA'}}>Tech Next Door MN</a></span>
       </footer>
     </div>
   )

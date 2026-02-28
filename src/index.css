@@ -102,41 +102,53 @@ nav {
   margin: 0 auto 2.5rem;
 }
 
-/* Search box */
+/* Search box (hero – zip + location + search) */
 .search-box {
   display: flex;
-  gap: 0.5rem;
-  max-width: 620px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  max-width: 440px;
   margin: 0 auto;
   background: white;
   border: 2px solid var(--border);
   border-radius: 12px;
-  padding: 0.4rem;
+  padding: 0.5rem 0.75rem;
   box-shadow: 0 4px 24px rgba(0,0,0,0.06);
 }
-.search-box input {
-  flex: 1;
-  border: none;
-  outline: none;
-  padding: 0.65rem 0.75rem;
-  font-size: 0.95rem;
-  background: transparent;
-  min-width: 0;
-}
-.search-box .divider {
-  width: 1px;
-  background: var(--border);
-  margin: 0.3rem 0;
-}
 .search-box .zip-input {
-  flex: 0 0 90px;
-  width: 90px;
+  flex: 0 0 7rem;
+  width: 7rem;
+  min-width: 0;
   text-align: center;
   border: none;
   outline: none;
-  padding: 0.65rem 0.5rem;
-  font-size: 0.95rem;
+  padding: 0.7rem 0.5rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
   background: transparent;
+  border-radius: 8px;
+  transition: background 0.2s;
+}
+.search-box .zip-input::placeholder {
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+.search-box .zip-input:focus {
+  background: var(--bg);
+}
+.search-box .btn-loc,
+.search-box .btn-primary {
+  flex-shrink: 0;
+}
+.search-box .loc-error {
+  flex-basis: 100%;
+  order: 10;
+  margin-top: 0.25rem;
+  text-align: center;
 }
 
 /* Use my location button */
@@ -329,7 +341,6 @@ nav {
   align-items: center;
 }
 .search-header input {
-  flex: 1;
   border: 1.5px solid var(--border);
   border-radius: 8px;
   padding: 0.6rem 0.9rem;
@@ -338,7 +349,13 @@ nav {
   transition: border-color 0.15s;
 }
 .search-header input:focus { border-color: var(--blue); }
-.search-header .zip { width: 120px; text-align: center; }
+.search-header .zip {
+  flex: 0 0 7rem;
+  width: 7rem;
+  text-align: center;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
 
 /* Activity cards */
 .activity-list { display: flex; flex-direction: column; gap: 0.75rem; }
@@ -448,21 +465,66 @@ nav {
   position: sticky;
   top: 80px;
 }
-.cost-display { font-size: 1.6rem; font-weight: 700; margin-bottom: 0.25rem; }
+.sidebar-card-title,
+.cost-register-card .sidebar-card-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-bottom: 0.75rem;
+}
+.cost-register-card .cost-display {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.4;
+  margin-bottom: 0;
+}
+.cost-register-card .cost-free {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--green);
+}
+.cost-register-card .cost-category {
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.cost-register-card .cost-detail {
+  color: var(--text);
+  font-weight: 500;
+}
 .register-btn {
-  display: block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
   width: 100%;
   text-align: center;
   background: var(--blue);
   color: white;
-  font-weight: 700;
-  padding: 0.85rem;
-  border-radius: 8px;
-  margin-top: 1rem;
-  transition: background 0.15s;
+  font-weight: 600;
+  padding: 0.9rem 1.25rem;
+  border-radius: 10px;
+  margin-top: 1.25rem;
+  transition: background 0.2s, box-shadow 0.2s, transform 0.15s;
   font-size: 0.95rem;
+  text-decoration: none;
+  box-shadow: 0 2px 8px rgba(29, 78, 216, 0.25);
 }
-.register-btn:hover { background: #1e40af; }
+.register-btn:hover {
+  background: #1e40af;
+  box-shadow: 0 4px 14px rgba(29, 78, 216, 0.35);
+}
+.register-btn svg {
+  flex-shrink: 0;
+  opacity: 0.95;
+}
 
 /* Empty / loading states */
 .state-msg {
