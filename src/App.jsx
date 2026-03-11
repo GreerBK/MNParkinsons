@@ -708,7 +708,7 @@ function Home() {
         )}
         <div className="hero-overlay" aria-hidden="true" />
         <div className="hero-content">
-          <div className="hero-eyebrow">Supported by APDA & Parkinson's Foundation</div>
+          <div className="hero-eyebrow">Helping you connect with community</div>
           <h1>Find Your <em>Community</em> in Minnesota</h1>
           <p>Connecting people with Parkinson's and their caregivers to local activities, support groups, and resources across the state.</p>
 
