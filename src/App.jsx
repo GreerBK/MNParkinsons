@@ -446,16 +446,174 @@ function parseHash(hash) {
 // ICONS (inline SVG — no dependency)
 // ─────────────────────────────────────────────
 const Icon = {
-  search: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>,
-  pin: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>,
-  clock: () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>,
-  dollar: () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="2" x2="12" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>,
-  bolt: () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>,
-  back: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>,
-  phone: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.87 12.26 19.79 19.79 0 0 1 1.81 3.67 2 2 0 0 1 3.78 1.5h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.77-1.77a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>,
-  mail: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>,
-  link: () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>,
-  location: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>,
+  search: () => (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.35-4.35" />
+    </svg>
+  ),
+  pin: () => (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" />
+      <circle cx="12" cy="10" r="3" />
+    </svg>
+  ),
+  clock: () => (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <circle cx="12" cy="12" r="10" />
+      <polyline points="12 6 12 12 16 14" />
+    </svg>
+  ),
+  dollar: () => (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <line x1="12" y1="2" x2="12" y2="22" />
+      <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+    </svg>
+  ),
+  bolt: () => (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+    </svg>
+  ),
+  back: () => (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="m12 19-7-7 7-7" />
+      <path d="M19 12H5" />
+    </svg>
+  ),
+  phone: () => (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.87 12.26 19.79 19.79 0 0 1 1.81 3.67 2 2 0 0 1 3.78 1.5h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.77-1.77a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />
+    </svg>
+  ),
+  mail: () => (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <rect width="20" height="16" x="2" y="4" rx="2" />
+      <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
+    </svg>
+  ),
+  link: () => (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+    </svg>
+  ),
+  location: () => (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" />
+      <circle cx="12" cy="10" r="3" />
+    </svg>
+  ),
 }
 
 // ─────────────────────────────────────────────
@@ -463,13 +621,23 @@ const Icon = {
 // ─────────────────────────────────────────────
 function Nav() {
   return (
-    <nav>
+    <nav aria-label="Main site navigation">
       <div className="nav-inner">
-        <button className="nav-logo" onClick={() => navigate('#/')}>
+        <button
+          type="button"
+          className="nav-logo"
+          onClick={() => navigate('#/')}
+          aria-label="MN Parkinson's Connect home"
+        >
           MN <span>Parkinson's Connect</span>
         </button>
-        <button className="btn btn-outline" style={{fontSize:'0.82rem'}} onClick={() => navigate('#/search')}>
-          Find Activities
+        <button
+          type="button"
+          className="btn btn-outline"
+          style={{fontSize:'0.82rem'}}
+          onClick={() => navigate('#/search')}
+        >
+          Find activities near you
         </button>
       </div>
     </nav>
@@ -483,8 +651,18 @@ function Home() {
   const [zip, setZip] = useState('')
   const [types, setTypes] = useState([])
   const { coords: userCoords, loading: locLoading, error: locError, requestLocation } = useUserLocation()
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false)
 
   // When user allows location on home, go straight to search with "near you"
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const handleChange = () => setPrefersReducedMotion(media.matches)
+    handleChange()
+    media.addEventListener('change', handleChange)
+    return () => media.removeEventListener('change', handleChange)
+  }, [])
+
   useEffect(() => {
     if (!userCoords) return
     const p = new URLSearchParams()
@@ -523,19 +701,27 @@ function Home() {
   return (
     <div>
       <section className="hero">
-        <div className="hero-video" aria-hidden="true">
-          <video autoPlay loop muted playsInline src="/serene.mp4" />
-        </div>
+        {!prefersReducedMotion && (
+          <div className="hero-video" aria-hidden="true">
+            <video autoPlay loop muted playsInline src="/serene.mp4" />
+          </div>
+        )}
         <div className="hero-overlay" aria-hidden="true" />
         <div className="hero-content">
-          <div className="hero-eyebrow">Supported by APDA & Parkinson's Foundation</div>
+          <div className="hero-eyebrow">Helping you connect with community</div>
           <h1>Find Your <em>Community</em> in Minnesota</h1>
           <p>Connecting people with Parkinson's and their caregivers to local activities, support groups, and resources across the state.</p>
 
           <form className="search-box" onSubmit={handleSearch}>
+          <label className="sr-only" htmlFor="home-zip">
+            Zip code
+          </label>
           <input
+            id="home-zip"
             className="zip-input"
             type="text"
+            inputMode="numeric"
+            pattern="\d*"
             placeholder="Zip Code"
             value={zip}
             onChange={e => setZip(e.target.value)}
@@ -551,7 +737,11 @@ function Home() {
             <span className="btn-loc-icon">{locLoading ? <span className="btn-loc-spinner" /> : <Icon.location />}</span>
             <span className="btn-loc-label">Use my location</span>
           </button>
-          {locError && <span className="loc-error">{locError}</span>}
+          {locError && (
+            <span className="loc-error" role="alert">
+              {locError}
+            </span>
+          )}
           <button type="submit" className="btn btn-primary">Search</button>
         </form>
         </div>
@@ -562,13 +752,15 @@ function Home() {
         {types.length > 0 ? (
           <div className="cat-grid">
             {types.map(type => (
-              <div
+              <button
+                type="button"
                 key={type}
                 className="cat-card"
+                aria-label={`Find ${type} activities`}
                 onClick={() => navigate(`#/search?type=${encodeURIComponent(type)}`)}
               >
                 {type}
-              </div>
+              </button>
             ))}
           </div>
         ) : (
@@ -787,8 +979,8 @@ function SearchResults({ params }) {
   }
 
   const FilterGroupMulti = ({ title, options, value, onChange }) => (
-    <>
-      <div className="filter-title">{title}</div>
+    <fieldset className="filter-group">
+      <legend className="filter-title">{title}</legend>
       {options.map(opt => (
         <label key={opt} className="filter-option">
           <input
@@ -799,16 +991,22 @@ function SearchResults({ params }) {
           {opt}
         </label>
       ))}
-    </>
+    </fieldset>
   )
 
   return (
     <div>
       <div className="search-header">
         <div className="search-header-inner">
+          <label className="sr-only" htmlFor="search-zip">
+            Zip code
+          </label>
           <input
+            id="search-zip"
             className="zip"
             type="text"
+            inputMode="numeric"
+            pattern="\d*"
             placeholder="Zip Code"
             value={zip}
             onChange={e => setZip(e.target.value)}
@@ -824,17 +1022,31 @@ function SearchResults({ params }) {
             <span className="btn-loc-icon">{locLoading ? <span className="btn-loc-spinner" /> : <Icon.location />}</span>
             <span className="btn-loc-label">Use my location</span>
           </button>
-          {locError && <span className="loc-error">{locError}</span>}
+          {locError && (
+            <span className="loc-error" role="alert">
+              {locError}
+            </span>
+          )}
           <button className="btn btn-primary" onClick={applyFilters}>Search</button>
-          <button className="btn btn-outline btn-filter-toggle" onClick={() => setShowFilters(f => !f)}>
-            {showFilters ? 'Hide Filters' : 'Filters'}
+          <button
+            type="button"
+            className="btn btn-outline btn-filter-toggle"
+            aria-expanded={showFilters}
+            aria-controls="filters-panel"
+            onClick={() => setShowFilters(f => !f)}
+          >
+            {showFilters ? 'Hide filters' : 'Show filters'}
           </button>
         </div>
       </div>
 
       <div className="results-layout">
         {/* Filters sidebar */}
-        <aside className={`filters-panel ${showFilters ? 'filters-open' : ''}`}>
+        <aside
+          id="filters-panel"
+          className={`filters-panel ${showFilters ? 'filters-open' : ''}`}
+          aria-label="Activity filters"
+        >
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0.5rem'}}>
             <strong style={{fontSize:'0.95rem'}}>Filters</strong>
             {(selType.length > 0 || selIntensity.length > 0 || selCost.length > 0 || selFormat.length > 0 || selDays.length > 0 || (zip && maxDistance != null) || params.get('lat')) && (
@@ -848,13 +1060,19 @@ function SearchResults({ params }) {
           <FilterGroupMulti title="Format" options={mergeOptions(filterOptions.format, DEFAULT_FILTER_OPTIONS.format)} value={selFormat} onChange={setSelFormat} />
           <FilterGroupMulti title="Days of week" options={mergeOptions(filterOptions.daysOfWeek, DEFAULT_FILTER_OPTIONS.daysOfWeek)} value={selDays} onChange={setSelDays} />
 
-          <div className="filter-distance">
-            <div className="filter-title">Distance from you</div>
-            <p className="filter-distance-desc">Enter your zip or use your location, then choose how far you’re willing to travel.</p>
+          <fieldset className="filter-distance" aria-describedby="distance-help">
+            <legend className="filter-title">Distance from you</legend>
+            <p id="distance-help" className="filter-distance-desc">Enter your zip or use your location, then choose how far you’re willing to travel.</p>
             <div style={{display:'flex',gap:'0.5rem',alignItems:'center',flexWrap:'wrap'}}>
+              <label className="sr-only" htmlFor="filter-zip">
+                Your zip code
+              </label>
               <input
+              id="filter-zip"
               type="text"
               className="filter-zip-input"
+              inputMode="numeric"
+              pattern="\d*"
               placeholder="Your zip code"
               value={zip}
               onChange={e => setZip(e.target.value)}
@@ -871,7 +1089,7 @@ function SearchResults({ params }) {
                 <span className="btn-loc-label">Use my location</span>
               </button>
             </div>
-            {locError && <span className="loc-error">{locError}</span>}
+              {locError && <span className="loc-error">{locError}</span>}
             {((zip && /^\d{5}$/.test(zip)) || userCoords || params.get('lat')) && (
             <>
               <div className="distance-slider-label">Within <strong>{maxDistance ?? DISTANCE_DEFAULT} miles</strong></div>
@@ -884,6 +1102,7 @@ function SearchResults({ params }) {
                   step={5}
                   value={maxDistance ?? DISTANCE_DEFAULT}
                   onChange={e => setMaxDistance(Number(e.target.value))}
+                  aria-label="Maximum distance in miles"
                 />
               </div>
               <div className="distance-ticks">
@@ -900,7 +1119,7 @@ function SearchResults({ params }) {
               </div>
             </>
             )}
-          </div>
+          </fieldset>
 
           <button className="btn btn-primary" style={{width:'100%',marginTop:'1rem'}} onClick={applyFilters}>
             Apply Filters
@@ -908,7 +1127,7 @@ function SearchResults({ params }) {
         </aside>
 
         {/* Results */}
-        <main>
+        <section aria-labelledby="results-heading">
           {loading ? (
             <div className="state-msg"><div className="spinner"/><p>Loading activities…</p></div>
           ) : error ? (
@@ -918,11 +1137,16 @@ function SearchResults({ params }) {
             </div>
           ) : (
             <>
-              <p className="results-meta">
-                <strong>{activities.length}</strong> {activities.length === 1 ? 'activity' : 'activities'} found
-                {(params.get('lat') && params.get('lng')) ? ' near you' : params.get('zip') ? ` near ${params.get('zip')}` : ''}
-                {((params.get('lat') && params.get('lng')) || params.get('zip')) && ` within ${params.get('distance') || DISTANCE_DEFAULT} mi`}
-              </p>
+              <h1 id="results-heading" className="results-heading">
+                Activities that match your filters
+              </h1>
+              <div aria-live="polite" aria-atomic="true">
+                <p className="results-meta">
+                  <strong>{activities.length}</strong> {activities.length === 1 ? 'activity' : 'activities'} found
+                  {(params.get('lat') && params.get('lng')) ? ' near you' : params.get('zip') ? ` near ${params.get('zip')}` : ''}
+                  {((params.get('lat') && params.get('lng')) || params.get('zip')) && ` within ${params.get('distance') || DISTANCE_DEFAULT} mi`}
+                </p>
+              </div>
               {activities.length === 0 ? (
                 <div className="state-msg">
                   <p>No activities match your filters.</p>
@@ -935,7 +1159,7 @@ function SearchResults({ params }) {
               )}
             </>
           )}
-        </main>
+        </section>
       </div>
 
       <footer>
@@ -948,7 +1172,11 @@ function SearchResults({ params }) {
 
 function ActivityCard({ activity: a }) {
   return (
-    <div className="activity-card" onClick={() => navigate(`#/activity/${a.id}`)}>
+    <button
+      type="button"
+      className="activity-card"
+      onClick={() => navigate(`#/activity/${a.id}`)}
+    >
       <div className="card-top">
         <div>
           <div className="card-name">{a.name}</div>
@@ -972,9 +1200,9 @@ function ActivityCard({ activity: a }) {
         {a.schedule && <span className="badge"><Icon.clock />{a.schedule.split(',')[0]}</span>}
         {a.intensity && <span className="badge"><Icon.bolt />{a.intensity}</span>}
         {(Array.isArray(a.type) ? a.type.length > 0 : !!a.type) && <span className="badge blue">{Array.isArray(a.type) ? a.type.join(', ') : a.type}</span>}
-        {a.dist != null && <span className="badge">{a.dist.toFixed(1)} mi</span>}
+        {a.dist != null && <span className="badge">{a.dist.toFixed(1)} mi away</span>}
       </div>
-    </div>
+    </button>
   )
 }
 
@@ -1140,6 +1368,13 @@ function ActivityDetail({ id }) {
 export default function App() {
   const hash = useRoute()
   const { path, params } = parseHash(hash)
+  const mainRef = useRef(null)
+
+  useEffect(() => {
+    if (mainRef.current) {
+      mainRef.current.focus()
+    }
+  }, [hash])
 
   let page
   if (path === '/' || path === '') {
@@ -1155,8 +1390,17 @@ export default function App() {
 
   return (
     <>
+      <a href="#main-content" className="skip-link">
+        Skip to main content
+      </a>
       <Nav />
-      {page}
+      <main
+        id="main-content"
+        ref={mainRef}
+        tabIndex="-1"
+      >
+        {page}
+      </main>
     </>
   )
 }
