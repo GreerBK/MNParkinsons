@@ -931,7 +931,7 @@ function SearchResults({ params }) {
     if (closePanel) setShowFilters(false)
   }
 
-  // Auto-apply when checkbox/distance filters change (results update immediately)
+  // Auto-apply when checkbox filters change (results update immediately)
   const didMountFilters = useRef(false)
   useEffect(() => {
     if (!didMountFilters.current) {
@@ -939,7 +939,25 @@ function SearchResults({ params }) {
       return
     }
     applyFilters(false)
-  }, [selType, selIntensity, selCost, selFormat, selDays, maxDistance])
+  }, [selType, selIntensity, selCost, selFormat, selDays])
+
+  // Auto-apply distance changes with debounce so slider dragging isn't disrupted
+  const didMountDistance = useRef(false)
+  const distanceDebounceRef = useRef(null)
+  useEffect(() => {
+    if (!didMountDistance.current) {
+      didMountDistance.current = true
+      return
+    }
+    if (distanceDebounceRef.current) clearTimeout(distanceDebounceRef.current)
+    distanceDebounceRef.current = setTimeout(() => {
+      applyFilters(false)
+      distanceDebounceRef.current = null
+    }, 400)
+    return () => {
+      if (distanceDebounceRef.current) clearTimeout(distanceDebounceRef.current)
+    }
+  }, [maxDistance])
 
   // Auto-apply when search or zip change (debounced so we don't navigate on every keystroke)
   const didMountSearch = useRef(false)

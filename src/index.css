@@ -348,6 +348,9 @@ nav {
   padding: 1.25rem;
   position: sticky;
   top: 80px;
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .filter-title {
   font-weight: 700;
@@ -370,7 +373,7 @@ nav {
   font-size: 0.9rem;
   cursor: pointer;
 }
-.filter-option input[type="checkbox"] { accent-color: var(--blue); width: 15px; height: 15px; }
+.filter-option input[type="checkbox"] { accent-color: var(--blue); width: 15px; height: 15px; cursor: pointer; }
 
 /* Distance filter */
 .filter-zip { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); }
