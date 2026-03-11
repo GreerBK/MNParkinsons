@@ -769,7 +769,7 @@ function Home() {
       </section>
 
       <footer>
-        <strong>MN Parkinson's Connect</strong> — A collaborative initiative of APDA Minnesota &amp; Parkinson's Foundation.<br />
+        <strong>MN Parkinson's Connect</strong> — Helping you connect with community.<br />
         <span style={{marginTop:'0.5rem',display:'inline-block'}}>Questions? <a href="mailto:info@mnparkinsons.org" style={{color:'#b8ccab'}}>info@mnparkinsons.org</a></span><br />
         <span style={{marginTop:'0.5rem',display:'inline-block',opacity:0.9}}>Powered by <a href="https://technextdoormn.com" target="_blank" rel="noopener noreferrer" style={{color:'#b8ccab'}}>Tech Next Door MN</a></span>
       </footer>
@@ -1163,7 +1163,7 @@ function SearchResults({ params }) {
       </div>
 
       <footer>
-        <strong>MN Parkinson's Connect</strong> — A collaborative initiative of APDA Minnesota &amp; Parkinson's Foundation.<br />
+        <strong>MN Parkinson's Connect</strong> — Helping you connect with community.<br />
         <span style={{marginTop:'0.5rem',display:'inline-block',opacity:0.9}}>Powered by <a href="https://technextdoormn.com" target="_blank" rel="noopener noreferrer" style={{color:'#b8ccab'}}>Tech Next Door MN</a></span>
       </footer>
     </div>
@@ -1355,7 +1355,7 @@ function ActivityDetail({ id }) {
       </div>
 
       <footer>
-        <strong>MN Parkinson's Connect</strong> — A collaborative initiative of APDA Minnesota &amp; Parkinson's Foundation.<br />
+        <strong>MN Parkinson's Connect</strong> — Helping you connect with community.<br />
         <span style={{marginTop:'0.5rem',display:'inline-block',opacity:0.9}}>Powered by <a href="https://technextdoormn.com" target="_blank" rel="noopener noreferrer" style={{color:'#b8ccab'}}>Tech Next Door MN</a></span>
       </footer>
     </div>
