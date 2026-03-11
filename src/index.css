@@ -26,9 +26,45 @@ body {
   line-height: 1.5;
 }
 
+/* Visually hidden but accessible text (for screen-reader-only labels) */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 a { color: inherit; text-decoration: none; }
 button { cursor: pointer; font-family: inherit; border: none; background: none; }
 input { font-family: inherit; }
+
+/* Global focus styles to ensure visible focus for interactive elements */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+/* Skip link for keyboard users */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0.5rem;
+  z-index: 999;
+  background: #121211;
+  color: #fcfffa;
+  padding: 0.5rem 1rem;
+  border-radius: 999px;
+}
+.skip-link:focus-visible {
+  left: 0.75rem;
+}
 
 /* Layout */
 .container { max-width: 1100px; margin: 0 auto; padding: 0 1.25rem; }
@@ -300,6 +336,11 @@ nav {
 }
 
 /* Filters */
+.filter-group {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
 .filters-panel {
   background: var(--white);
   border: 1.5px solid var(--border);
@@ -398,6 +439,9 @@ nav {
   padding: 1.25rem;
   transition: border-color 0.15s, box-shadow 0.15s;
   cursor: pointer;
+  display: block;
+  width: 100%;
+  text-align: left;
 }
 .activity-card:hover { border-color: var(--primary); box-shadow: 0 4px 16px rgba(66,134,18,0.12); }
 .card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 0.5rem; }
@@ -424,6 +468,12 @@ nav {
 /* Results count */
 .results-meta { font-size: 0.9rem; color: var(--muted); margin-bottom: 1rem; }
 .results-meta strong { color: var(--text); }
+
+.results-heading {
+  font-family: 'DM Serif Display', serif;
+  font-size: 1.4rem;
+  margin-bottom: 0.35rem;
+}
 
 /* Detail page */
 .detail-wrap {
@@ -584,3 +634,10 @@ footer {
   text-align: center;
 }
 footer strong { color: #fcfffa; }
+
+/* Respect reduced motion preference: avoid looping background video when possible */
+@media (prefers-reduced-motion: reduce) {
+  .hero-video {
+    display: none;
+  }
+}
