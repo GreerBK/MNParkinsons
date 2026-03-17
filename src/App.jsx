@@ -1153,7 +1153,7 @@ function SearchResults({ params }) {
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0.5rem'}}>
             <strong style={{fontSize:'0.95rem'}}>Filters</strong>
             {(selType.length > 0 || selIntensity.length > 0 || selCost.length > 0 || selFormat.length > 0 || selDays.length > 0 || (zip && maxDistance != null) || params.get('lat')) && (
-              <button onClick={clearFilters} style={{fontSize:'0.78rem',color:'var(--blue)',fontWeight:600}}>Clear all</button>
+              <button onClick={clearFilters} style={{fontSize:'0.78rem',color:'var(--primary)',fontWeight:600}}>Clear all</button>
             )}
           </div>
 
@@ -1299,6 +1299,11 @@ function ActivityCard({ activity: a }) {
   }
   const handleMouseLeave = () => setTip(null)
 
+  const isFreeCost = (() => {
+    const label = String(a.costCategory || a.costDisplay || '').trim()
+    return label === 'Free'
+  })()
+
   return (
     <button
       type="button"
@@ -1322,8 +1327,8 @@ function ActivityCard({ activity: a }) {
             </div>
           )}
         </div>
-        <span className="badge blue">
-          {a.costCategory === 'Free' ? 'Free' : <><Icon.dollar />{a.costCategory || a.costDisplay || '—'}</>}
+        <span className={`badge ${isFreeCost ? 'blue' : ''}`}>
+          {isFreeCost ? 'Free' : <><Icon.dollar />{a.costCategory || a.costDisplay || '—'}</>}
         </span>
       </div>
       <div className="card-meta">
@@ -1369,7 +1374,7 @@ function ActivityDetail({ id }) {
   }, [activity])
 
   if (loading) return <div className="state-msg" role="status" style={{padding:'4rem'}}><div className="spinner"/><p>Loading…</p></div>
-  if (error) return <div className="state-msg" role="alert" style={{padding:'4rem',color:'#DC2626'}}><p>{error}</p><button style={{marginTop:'1rem',color:'var(--blue)',fontWeight:600}} onClick={()=>navigate('#/search')}>← Back to search</button></div>
+  if (error) return <div className="state-msg" role="alert" style={{padding:'4rem',color:'#DC2626'}}><p>{error}</p><button style={{marginTop:'1rem',color:'var(--primary)',fontWeight:600}} onClick={()=>navigate('#/search')}>← Back to search</button></div>
   if (!activity) return null
 
   const a = activity
@@ -1425,7 +1430,7 @@ function ActivityDetail({ id }) {
                   <span className="info-label">Map</span>
                   <a
                     className="info-value"
-                    style={{color:'var(--blue)',fontWeight:500}}
+                    style={{color:'var(--primary)',fontWeight:500}}
                     href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(a.address || a.location)}`}
                     target="_blank"
                     rel="noopener noreferrer"
@@ -1442,7 +1447,7 @@ function ActivityDetail({ id }) {
               {a.phone && (
                 <div className="info-row">
                   <span className="info-label">Phone</span>
-                  <a className="info-value" href={`tel:${a.phone}`} style={{color:'var(--blue)',fontWeight:500}}>
+                  <a className="info-value" href={`tel:${a.phone}`} style={{color:'var(--primary)',fontWeight:500}}>
                     <Icon.phone /> {a.phone}
                   </a>
                 </div>
@@ -1450,7 +1455,7 @@ function ActivityDetail({ id }) {
               {a.email && (
                 <div className="info-row">
                   <span className="info-label">Email</span>
-                  <a className="info-value" href={`mailto:${a.email}`} style={{color:'var(--blue)',fontWeight:500}}>
+                  <a className="info-value" href={`mailto:${a.email}`} style={{color:'var(--primary)',fontWeight:500}}>
                     <Icon.mail /> {a.email}
                   </a>
                 </div>
@@ -1458,7 +1463,7 @@ function ActivityDetail({ id }) {
               {a.website && a.website !== 'N/A' && (
                 <div className="info-row">
                   <span className="info-label">Website</span>
-                  <a className="info-value" href={a.website.startsWith('http') ? a.website : `https://${a.website}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--blue)',fontWeight:500}}>
+                  <a className="info-value" href={a.website.startsWith('http') ? a.website : `https://${a.website}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--primary)',fontWeight:500}}>
                     <Icon.link /> Visit website ↗<ExtLink />
                   </a>
                 </div>
