@@ -6,6 +6,10 @@
   --primary-light: #e8efe5;
   --primary-mid: #b8ccab;
   --primary-hover: #2b5a0d;
+  /* Accent blue for chips / "Free" bubbles */
+  --accent-blue: #2563eb;
+  --accent-blue-light: #dbeafe;
+  --accent-blue-mid: #93c5fd;
   --text: #121211;
   --muted: #5c6359;
   --border: #899682;
@@ -485,16 +489,19 @@ nav {
   color: var(--muted);
 }
 .badge.blue { background: var(--primary-light); border-color: var(--primary-mid); color: var(--primary); }
+.badge.badge-cost-free { background: var(--accent-blue-light); border-color: var(--accent-blue-mid); color: var(--accent-blue); }
 .badge.green { background: var(--green-light); border-color: var(--primary-mid); color: var(--green); }
 
 /* Cursor-following tooltip on activity cards */
 .card-tooltip {
   position: fixed;
-  transform: translate(8px, -60%);
+  /* Bottom-right of cursor, slightly softer styling */
+  transform: translate(12px, 16px);
   background: var(--text);
   color: var(--white);
   font-size: 0.75rem;
-  font-weight: 600;
+  font-weight: 500;
+  opacity: 0.8;
   padding: 0.3rem 0.65rem;
   border-radius: 6px;
   white-space: nowrap;
@@ -689,9 +696,9 @@ nav {
   border-radius: 999px;
   font-size: 0.9rem;
   font-weight: 700;
-  color: var(--primary);
-  background: var(--primary-light);
-  border: 1px solid var(--primary-mid);
+  color: var(--accent-blue);
+  background: var(--accent-blue-light);
+  border: 1px solid var(--accent-blue-mid);
 }
 .cost-register-card .cost-category {
   font-size: 0.8rem;

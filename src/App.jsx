@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import ReactDOM from 'react-dom'
 
 // ─────────────────────────────────────────────
 // CONFIG — set your values here or in .env
@@ -1304,14 +1305,30 @@ function ActivityCard({ activity: a }) {
     return label === 'Free'
   })()
 
+  const tooltipNode = tip && typeof document !== 'undefined'
+    ? ReactDOM.createPortal(
+        (
+          <span
+            className="card-tooltip"
+            aria-hidden="true"
+            style={{ left: tip.x, top: tip.y }}
+          >
+            Click for more info
+          </span>
+        ),
+        document.body
+      )
+    : null
+
   return (
-    <button
-      type="button"
-      className="activity-card"
-      onClick={() => navigate(`#/activity/${a.id}`)}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={handleMouseLeave}
-    >
+    <>
+      <button
+        type="button"
+        className="activity-card"
+        onClick={() => navigate(`#/activity/${a.id}`)}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
+      >
       <div className="card-top">
         <div>
           <div className="card-name">{a.name}</div>
@@ -1327,7 +1344,7 @@ function ActivityCard({ activity: a }) {
             </div>
           )}
         </div>
-        <span className={`badge ${isFreeCost ? 'blue' : ''}`}>
+        <span className={`badge ${isFreeCost ? 'badge-cost-free' : ''}`}>
           {isFreeCost ? 'Free' : <><Icon.dollar />{a.costCategory || a.costDisplay || '—'}</>}
         </span>
       </div>
@@ -1337,16 +1354,9 @@ function ActivityCard({ activity: a }) {
         {(Array.isArray(a.type) ? a.type.length > 0 : !!a.type) && <span className="badge blue">{Array.isArray(a.type) ? a.type.join(', ') : a.type}</span>}
         {a.dist != null && <span className="badge">{a.dist.toFixed(1)} mi away</span>}
       </div>
-      {tip && (
-        <span
-          className="card-tooltip"
-          aria-hidden="true"
-          style={{ left: tip.x, top: tip.y }}
-        >
-          Click for more info
-        </span>
-      )}
-    </button>
+      </button>
+      {tooltipNode}
+    </>
   )
 }
 
