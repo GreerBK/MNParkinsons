@@ -47,6 +47,7 @@ function mapRecord(record) {
     status:           f['Status']                 || 'Active',
     lat:              (() => { const v = f['Latitude']; const n = parseFloat(v); return v != null && !isNaN(n) ? n : null })(),
     lng:              (() => { const v = f['Longitude']; const n = parseFloat(v); return v != null && !isNaN(n) ? n : null })(),
+    emoji:            f['Emoji']                   || '',
   }
 }
 
@@ -445,6 +446,9 @@ function parseHash(hash) {
 // ─────────────────────────────────────────────
 // ICONS (inline SVG — no dependency)
 // ─────────────────────────────────────────────
+// WCAG: screen reader indicator for links that open in a new tab
+const ExtLink = () => <span className="sr-only"> (opens in new tab)</span>
+
 const Icon = {
   search: () => (
     <svg
@@ -616,6 +620,45 @@ const Icon = {
   ),
 }
 
+// Auto-match category names to emojis via keyword matching
+// Works with any category from Airtable — no hardcoding needed
+const EMOJI_KEYWORDS = [
+  [/box/i, '🥊'], [/yoga/i, '🧘'], [/exercis|workout|fitness|gym/i, '🏋️'],
+  [/support|group|community/i, '🤝'], [/danc/i, '💃'], [/cycl|bik/i, '🚴'],
+  [/swim|aqua|pool|water/i, '🏊'], [/walk|hik/i, '🚶'], [/tai.?chi|qigong/i, '🧎'],
+  [/pilates|stretch/i, '🤸'], [/music|sing|choir/i, '🎵'], [/art|paint|craft/i, '🎨'],
+  [/speech|voice|talk/i, '🗣️'], [/meditat|mindful/i, '🧠'], [/garden/i, '🌱'],
+  [/row/i, '🚣'], [/climb/i, '🧗'], [/run|jog/i, '🏃'], [/martial|karate|judo/i, '🥋'],
+  [/tennis|racquet|pickleball/i, '🎾'], [/golf/i, '⛳'], [/horse|equine|equestrian/i, '🐴'],
+  [/cook|nutrition|food/i, '🍳'], [/read|book/i, '📚'], [/tech|computer/i, '💻'],
+  [/game|play/i, '🎲'], [/photo/i, '📷'], [/volunt/i, '❤️'], [/social|meet/i, '👋'],
+]
+function getCategoryEmoji(name) {
+  for (const [pattern, emoji] of EMOJI_KEYWORDS) {
+    if (pattern.test(name)) return emoji
+  }
+  return '✨' // friendly fallback for unmatched categories
+}
+
+function ScrollToTop() {
+  const [visible, setVisible] = useState(false)
+  useEffect(() => {
+    const onScroll = () => setVisible(window.scrollY > 400)
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
+  return (
+    <button
+      className={`scroll-top ${visible ? 'visible' : ''}`}
+      onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+      aria-label="Scroll to top"
+      tabIndex={visible ? 0 : -1}
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg>
+    </button>
+  )
+}
+
 // ─────────────────────────────────────────────
 // NAV
 // ─────────────────────────────────────────────
@@ -650,6 +693,7 @@ function Nav() {
 function Home() {
   const [zip, setZip] = useState('')
   const [types, setTypes] = useState([])
+  const [typeEmojis, setTypeEmojis] = useState({})
   const { coords: userCoords, loading: locLoading, error: locError, requestLocation } = useUserLocation()
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false)
 
@@ -675,12 +719,20 @@ function Home() {
   useEffect(() => {
     fetchActivities().then(acts => {
       const seen = new Set()
+      const emojis = {}
       acts.forEach(a => {
         if (!a.type) return
         const list = Array.isArray(a.type) ? a.type : [a.type]
-        list.forEach(t => t && seen.add(String(t).trim()))
+        list.forEach(t => {
+          if (!t) return
+          const name = String(t).trim()
+          seen.add(name)
+          // First non-empty Airtable emoji wins for each type
+          if (a.emoji && !emojis[name]) emojis[name] = a.emoji
+        })
       })
       setTypes([...seen].sort())
+      setTypeEmojis(emojis)
     }).catch(() => {})
   }, [])
 
@@ -701,12 +753,6 @@ function Home() {
   return (
     <div>
       <section className="hero">
-        {!prefersReducedMotion && (
-          <div className="hero-video" aria-hidden="true">
-            <video autoPlay loop muted playsInline src="/serene.mp4" />
-          </div>
-        )}
-        <div className="hero-overlay" aria-hidden="true" />
         <div className="hero-content">
           <div className="hero-eyebrow">Helping you connect with community</div>
           <h1>Find Your <em>Community</em> in Minnesota</h1>
@@ -723,6 +769,7 @@ function Home() {
             inputMode="numeric"
             pattern="\d*"
             placeholder="Zip Code"
+            autoComplete="postal-code"
             value={zip}
             onChange={e => setZip(e.target.value)}
             maxLength={5}
@@ -759,19 +806,20 @@ function Home() {
                 aria-label={`Find ${type} activities`}
                 onClick={() => navigate(`#/search?type=${encodeURIComponent(type)}`)}
               >
+                <span className="cat-card-icon" aria-hidden="true">{typeEmojis[type] || getCategoryEmoji(type)}</span>
                 {type}
               </button>
             ))}
           </div>
         ) : (
-          <div className="state-msg"><div className="spinner" /><p>Loading categories…</p></div>
+          <div className="state-msg" role="status"><div className="spinner" /><p>Loading categories…</p></div>
         )}
       </section>
 
       <footer>
         <strong>MN Parkinson's Connect</strong> — Helping you connect with community.<br />
         <span style={{marginTop:'0.5rem',display:'inline-block'}}>Questions? <a href="mailto:info@mnparkinsons.org" style={{color:'#b8ccab'}}>info@mnparkinsons.org</a></span><br />
-        <span style={{marginTop:'0.5rem',display:'inline-block',opacity:0.9}}>Powered by <a href="https://technextdoormn.com" target="_blank" rel="noopener noreferrer" style={{color:'#b8ccab'}}>Tech Next Door MN</a></span>
+        <span style={{marginTop:'0.5rem',display:'inline-block',opacity:0.9}}>Powered by <a href="https://technextdoormn.com" target="_blank" rel="noopener noreferrer" style={{color:'#b8ccab'}}>Tech Next Door MN<ExtLink /></a></span>
       </footer>
     </div>
   )
@@ -813,6 +861,7 @@ function SearchResults({ params }) {
   const [filterOptions, setFilterOptions] = useState(EMPTY_FILTER_OPTIONS)
   const [showFilters, setShowFilters] = useState(false)
   const { coords: userCoords, loading: locLoading, error: locError, requestLocation } = useUserLocation()
+  const filtersRef = useRef(null)
 
   // filter state (multi-select as arrays)
   const [q, setQ] = useState(params.get('q') || '')
@@ -977,6 +1026,28 @@ function SearchResults({ params }) {
     }
   }, [zip])
 
+  // Trap scroll inside filters panel so page doesn't scroll when hovering sidebar
+  useEffect(() => {
+    const el = filtersRef.current
+    if (!el) return
+    const onWheel = (e) => {
+      const { scrollTop, scrollHeight, clientHeight } = el
+      const hasOverflow = scrollHeight > clientHeight
+      if (!hasOverflow) {
+        // No scrollable content — just block page scroll
+        e.preventDefault()
+        return
+      }
+      const atTop = scrollTop <= 0 && e.deltaY < 0
+      const atBottom = scrollTop + clientHeight >= scrollHeight - 1 && e.deltaY > 0
+      if (atTop || atBottom) {
+        e.preventDefault()
+      }
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  })
+
   const clearFilters = () => {
     setSelType([]); setSelIntensity([]); setSelCost([])
     setSelFormat([]); setSelDays([]); setZip(''); setQ('')
@@ -1012,6 +1083,17 @@ function SearchResults({ params }) {
     </fieldset>
   )
 
+  const activeFilterCount = selType.length + selIntensity.length + selCost.length + selFormat.length + selDays.length
+
+  // Build list of active filter chips for display above results
+  const activeChips = [
+    ...selType.map(v => ({ label: v, remove: () => setSelType(selType.filter(x => x !== v)) })),
+    ...selIntensity.map(v => ({ label: v, remove: () => setSelIntensity(selIntensity.filter(x => x !== v)) })),
+    ...selCost.map(v => ({ label: v, remove: () => setSelCost(selCost.filter(x => x !== v)) })),
+    ...selFormat.map(v => ({ label: v, remove: () => setSelFormat(selFormat.filter(x => x !== v)) })),
+    ...selDays.map(v => ({ label: v, remove: () => setSelDays(selDays.filter(x => x !== v)) })),
+  ]
+
   return (
     <div>
       <div className="search-header">
@@ -1026,6 +1108,7 @@ function SearchResults({ params }) {
             inputMode="numeric"
             pattern="\d*"
             placeholder="Zip Code"
+            autoComplete="postal-code"
             value={zip}
             onChange={e => setZip(e.target.value)}
             maxLength={5}
@@ -1053,7 +1136,8 @@ function SearchResults({ params }) {
             aria-controls="filters-panel"
             onClick={() => setShowFilters(f => !f)}
           >
-            {showFilters ? 'Hide filters' : 'Show filters'}
+            {showFilters ? 'Hide filters' : 'Filters'}
+            {activeFilterCount > 0 && <span className="filter-badge">{activeFilterCount}</span>}
           </button>
         </div>
       </div>
@@ -1062,6 +1146,7 @@ function SearchResults({ params }) {
         {/* Filters sidebar */}
         <aside
           id="filters-panel"
+          ref={filtersRef}
           className={`filters-panel ${showFilters ? 'filters-open' : ''}`}
           aria-label="Activity filters"
         >
@@ -1092,6 +1177,7 @@ function SearchResults({ params }) {
               inputMode="numeric"
               pattern="\d*"
               placeholder="Your zip code"
+              autoComplete="postal-code"
               value={zip}
               onChange={e => setZip(e.target.value)}
               maxLength={5}
@@ -1129,6 +1215,7 @@ function SearchResults({ params }) {
                     key={m}
                     type="button"
                     className={`distance-tick ${(maxDistance ?? DISTANCE_DEFAULT) === m ? 'active' : ''}`}
+                    aria-pressed={(maxDistance ?? DISTANCE_DEFAULT) === m}
                     onClick={() => setMaxDistance(m)}
                   >
                     {m} mi
@@ -1147,9 +1234,9 @@ function SearchResults({ params }) {
         {/* Results */}
         <section aria-labelledby="results-heading">
           {loading ? (
-            <div className="state-msg"><div className="spinner"/><p>Loading activities…</p></div>
+            <div className="state-msg" role="status"><div className="spinner"/><p>Loading activities…</p></div>
           ) : error ? (
-            <div className="state-msg" style={{color:'#DC2626'}}>
+            <div className="state-msg" role="alert" style={{color:'#DC2626'}}>
               <p><strong>Error:</strong> {error}</p>
               <p style={{marginTop:'0.5rem',fontSize:'0.85rem'}}>Check that your AIRTABLE_PAT is set in your .env file.</p>
             </div>
@@ -1165,10 +1252,26 @@ function SearchResults({ params }) {
                   {((params.get('lat') && params.get('lng')) || params.get('zip')) && ` within ${params.get('distance') || DISTANCE_DEFAULT} mi`}
                 </p>
               </div>
+              {activeChips.length > 0 && (
+                <div className="active-chips" aria-label="Active filters">
+                  {activeChips.map((c, i) => (
+                    <button key={i} className="chip" onClick={c.remove} aria-label={`Remove ${c.label} filter`}>
+                      {c.label} <span className="chip-x" aria-hidden="true">×</span>
+                    </button>
+                  ))}
+                  {activeChips.length > 1 && (
+                    <button className="chip" onClick={clearFilters} style={{background:'transparent',borderStyle:'dashed'}}>
+                      Clear all
+                    </button>
+                  )}
+                </div>
+              )}
               {activities.length === 0 ? (
-                <div className="state-msg">
-                  <p>No activities match your filters.</p>
-                  <button style={{marginTop:'0.75rem',color:'var(--blue)',fontWeight:600}} onClick={clearFilters}>Clear filters</button>
+                <div className="empty-state">
+                  <div className="empty-state-icon" aria-hidden="true">🔍</div>
+                  <h2>No activities found</h2>
+                  <p>Try adjusting your filters, expanding your search distance, or searching from a different location.</p>
+                  <button className="btn btn-primary" onClick={clearFilters}>Clear all filters</button>
                 </div>
               ) : (
                 <div className="activity-list">
@@ -1182,18 +1285,27 @@ function SearchResults({ params }) {
 
       <footer>
         <strong>MN Parkinson's Connect</strong> — Helping you connect with community.<br />
-        <span style={{marginTop:'0.5rem',display:'inline-block',opacity:0.9}}>Powered by <a href="https://technextdoormn.com" target="_blank" rel="noopener noreferrer" style={{color:'#b8ccab'}}>Tech Next Door MN</a></span>
+        <span style={{marginTop:'0.5rem',display:'inline-block',opacity:0.9}}>Powered by <a href="https://technextdoormn.com" target="_blank" rel="noopener noreferrer" style={{color:'#b8ccab'}}>Tech Next Door MN<ExtLink /></a></span>
       </footer>
     </div>
   )
 }
 
 function ActivityCard({ activity: a }) {
+  const [tip, setTip] = useState(null)
+
+  const handleMouseMove = (e) => {
+    setTip({ x: e.clientX, y: e.clientY })
+  }
+  const handleMouseLeave = () => setTip(null)
+
   return (
     <button
       type="button"
       className="activity-card"
       onClick={() => navigate(`#/activity/${a.id}`)}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={handleMouseLeave}
     >
       <div className="card-top">
         <div>
@@ -1210,8 +1322,8 @@ function ActivityCard({ activity: a }) {
             </div>
           )}
         </div>
-        <span className={`badge ${a.costCategory === 'Free' ? 'green' : 'blue'}`}>
-          <Icon.dollar />{a.costCategory || a.costDisplay || '—'}
+        <span className="badge blue">
+          {a.costCategory === 'Free' ? 'Free' : <><Icon.dollar />{a.costCategory || a.costDisplay || '—'}</>}
         </span>
       </div>
       <div className="card-meta">
@@ -1220,6 +1332,15 @@ function ActivityCard({ activity: a }) {
         {(Array.isArray(a.type) ? a.type.length > 0 : !!a.type) && <span className="badge blue">{Array.isArray(a.type) ? a.type.join(', ') : a.type}</span>}
         {a.dist != null && <span className="badge">{a.dist.toFixed(1)} mi away</span>}
       </div>
+      {tip && (
+        <span
+          className="card-tooltip"
+          aria-hidden="true"
+          style={{ left: tip.x, top: tip.y }}
+        >
+          Click for more info
+        </span>
+      )}
     </button>
   )
 }
@@ -1240,8 +1361,15 @@ function ActivityDetail({ id }) {
       .finally(() => setLoading(false))
   }, [id])
 
-  if (loading) return <div className="state-msg" style={{padding:'4rem'}}><div className="spinner"/><p>Loading…</p></div>
-  if (error) return <div className="state-msg" style={{padding:'4rem',color:'#DC2626'}}><p>{error}</p><button style={{marginTop:'1rem',color:'var(--blue)',fontWeight:600}} onClick={()=>navigate('#/search')}>← Back to search</button></div>
+  // WCAG 2.4.2 — set specific page title once activity name is known
+  useEffect(() => {
+    if (activity?.name) {
+      document.title = `${activity.name} — MN Parkinson's Connect`
+    }
+  }, [activity])
+
+  if (loading) return <div className="state-msg" role="status" style={{padding:'4rem'}}><div className="spinner"/><p>Loading…</p></div>
+  if (error) return <div className="state-msg" role="alert" style={{padding:'4rem',color:'#DC2626'}}><p>{error}</p><button style={{marginTop:'1rem',color:'var(--blue)',fontWeight:600}} onClick={()=>navigate('#/search')}>← Back to search</button></div>
   if (!activity) return null
 
   const a = activity
@@ -1256,7 +1384,10 @@ function ActivityDetail({ id }) {
   return (
     <div>
       <div className="detail-wrap">
-        <button className="detail-back" onClick={() => navigate('#/search')}>
+        <button className="detail-back" onClick={() => {
+          // Preserve search context — go back if there's history, otherwise fall back to search
+          if (window.history.length > 1) { window.history.back() } else { navigate('#/search') }
+        }}>
           <Icon.back /> Back to results
         </button>
 
@@ -1275,7 +1406,7 @@ function ActivityDetail({ id }) {
           {/* Left column */}
           <div>
             <div className="info-card">
-              <h3>Schedule & Logistics</h3>
+              <h2>Schedule & Logistics</h2>
               <Row label="Days & Times" value={a.schedule} />
               <Row label="Days of Week" value={a.daysOfWeek} />
               <Row label="Time of Day" value={a.timeOfDay} />
@@ -1285,7 +1416,7 @@ function ActivityDetail({ id }) {
             </div>
 
             <div className="info-card">
-              <h3>Location</h3>
+              <h2>Location</h2>
               <Row label="Venue" value={a.location} />
               <Row label="Address" value={a.format !== 'Virtual' ? a.address : null} />
               <Row label="Zip Code" value={a.format !== 'Virtual' ? a.zip : null} />
@@ -1299,14 +1430,14 @@ function ActivityDetail({ id }) {
                     target="_blank"
                     rel="noopener noreferrer"
                   >
-                    Open in Google Maps ↗
+                    Open in Google Maps ↗<ExtLink />
                   </a>
                 </div>
               )}
             </div>
 
             <div className="info-card">
-              <h3>Contact</h3>
+              <h2>Contact</h2>
               <Row label="Contact" value={a.contact} />
               {a.phone && (
                 <div className="info-row">
@@ -1328,7 +1459,7 @@ function ActivityDetail({ id }) {
                 <div className="info-row">
                   <span className="info-label">Website</span>
                   <a className="info-value" href={a.website.startsWith('http') ? a.website : `https://${a.website}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--blue)',fontWeight:500}}>
-                    <Icon.link /> Visit website ↗
+                    <Icon.link /> Visit website ↗<ExtLink />
                   </a>
                 </div>
               )}
@@ -1338,7 +1469,7 @@ function ActivityDetail({ id }) {
           {/* Right sidebar */}
           <div>
             <div className="sidebar-card cost-register-card">
-              <h3 className="sidebar-card-title">Cost</h3>
+              <h2 className="sidebar-card-title">Cost</h2>
               <div className="cost-display">
                 {a.costCategory === 'Free' ? (
                   <span className="cost-free">Free</span>
@@ -1363,7 +1494,7 @@ function ActivityDetail({ id }) {
                     target="_blank"
                     rel="noopener noreferrer"
                   >
-                    <Icon.link /> Register / Sign up
+                    <Icon.link /> Register / Sign up<ExtLink />
                   </a>
                 )
               })()}
@@ -1374,7 +1505,7 @@ function ActivityDetail({ id }) {
 
       <footer>
         <strong>MN Parkinson's Connect</strong> — Helping you connect with community.<br />
-        <span style={{marginTop:'0.5rem',display:'inline-block',opacity:0.9}}>Powered by <a href="https://technextdoormn.com" target="_blank" rel="noopener noreferrer" style={{color:'#b8ccab'}}>Tech Next Door MN</a></span>
+        <span style={{marginTop:'0.5rem',display:'inline-block',opacity:0.9}}>Powered by <a href="https://technextdoormn.com" target="_blank" rel="noopener noreferrer" style={{color:'#b8ccab'}}>Tech Next Door MN<ExtLink /></a></span>
       </footer>
     </div>
   )
@@ -1383,16 +1514,94 @@ function ActivityDetail({ id }) {
 // ─────────────────────────────────────────────
 // APP ROOT
 // ─────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// DISCLAIMER MODAL — shown once before site access
+// ─────────────────────────────────────────────
+const DISCLAIMER_KEY = 'mnpc_disclaimer_accepted'
+
+function DisclaimerModal({ onAccept }) {
+  const btnRef = useRef(null)
+
+  useEffect(() => {
+    // Trap focus on mount
+    if (btnRef.current) btnRef.current.focus()
+    // Prevent background scrolling
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = '' }
+  }, [])
+
+  return (
+    <div className="disclaimer-overlay" role="dialog" aria-modal="true" aria-labelledby="disclaimer-title">
+      <div className="disclaimer-modal">
+        <div className="disclaimer-icon" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="16" x2="12" y2="12"/>
+            <line x1="12" y1="8" x2="12.01" y2="8"/>
+          </svg>
+        </div>
+        <h2 id="disclaimer-title">Important Notice</h2>
+        <div className="disclaimer-body">
+          <p>
+            The information on this website, including listings and descriptions of exercise programs
+            for persons with Parkinson's disease, is provided by the identified organization and is
+            for general informational purposes only and is not a substitute for professional medical
+            advice, diagnosis, or treatment. Always seek the advice of your physician or other
+            qualified healthcare provider with any questions you may have.
+          </p>
+          <br />
+          <p>
+            This website makes no recommendations or representations about the appropriateness or
+            quality of any program listed. Inclusion in the database does not imply competency,
+            quality of services or endorsement by the site.
+          </p>
+        </div>
+        <button
+          ref={btnRef}
+          className="btn-accept"
+          onClick={onAccept}
+        >
+          I Understand — Continue
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
+  const [disclaimerAccepted, setDisclaimerAccepted] = useState(() => {
+    try { return localStorage.getItem(DISCLAIMER_KEY) === 'true' } catch { return false }
+  })
   const hash = useRoute()
   const { path, params } = parseHash(hash)
   const mainRef = useRef(null)
+
+  const handleAcceptDisclaimer = useCallback(() => {
+    try { localStorage.setItem(DISCLAIMER_KEY, 'true') } catch {}
+    setDisclaimerAccepted(true)
+  }, [])
 
   useEffect(() => {
     if (mainRef.current) {
       mainRef.current.focus()
     }
   }, [hash])
+
+  // WCAG 2.4.2 — update page title on route change
+  useEffect(() => {
+    const base = 'MN Parkinson\'s Connect'
+    if (path === '/search') {
+      document.title = `Search Activities — ${base}`
+    } else if (path.startsWith('/activity/')) {
+      document.title = `Activity Details — ${base}`
+    } else {
+      document.title = base
+    }
+  }, [path])
+
+  if (!disclaimerAccepted) {
+    return <DisclaimerModal onAccept={handleAcceptDisclaimer} />
+  }
 
   let page
   if (path === '/' || path === '') {
@@ -1419,6 +1628,7 @@ export default function App() {
       >
         {page}
       </main>
+      <ScrollToTop />
     </>
   )
 }
