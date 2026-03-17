@@ -1153,7 +1153,7 @@ function SearchResults({ params }) {
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0.5rem'}}>
             <strong style={{fontSize:'0.95rem'}}>Filters</strong>
             {(selType.length > 0 || selIntensity.length > 0 || selCost.length > 0 || selFormat.length > 0 || selDays.length > 0 || (zip && maxDistance != null) || params.get('lat')) && (
-              <button onClick={clearFilters} style={{fontSize:'0.78rem',color:'var(--blue)',fontWeight:600}}>Clear all</button>
+              <button onClick={clearFilters} style={{fontSize:'0.78rem',color:'var(--primary)',fontWeight:600}}>Clear all</button>
             )}
           </div>
 
@@ -1425,7 +1425,7 @@ function ActivityDetail({ id }) {
                   <span className="info-label">Map</span>
                   <a
                     className="info-value"
-                    style={{color:'var(--blue)',fontWeight:500}}
+                    style={{color:'var(--primary)',fontWeight:500}}
                     href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(a.address || a.location)}`}
                     target="_blank"
                     rel="noopener noreferrer"
@@ -1442,7 +1442,7 @@ function ActivityDetail({ id }) {
               {a.phone && (
                 <div className="info-row">
                   <span className="info-label">Phone</span>
-                  <a className="info-value" href={`tel:${a.phone}`} style={{color:'var(--blue)',fontWeight:500}}>
+                  <a className="info-value" href={`tel:${a.phone}`} style={{color:'var(--primary)',fontWeight:500}}>
                     <Icon.phone /> {a.phone}
                   </a>
                 </div>
@@ -1450,7 +1450,7 @@ function ActivityDetail({ id }) {
               {a.email && (
                 <div className="info-row">
                   <span className="info-label">Email</span>
-                  <a className="info-value" href={`mailto:${a.email}`} style={{color:'var(--blue)',fontWeight:500}}>
+                  <a className="info-value" href={`mailto:${a.email}`} style={{color:'var(--primary)',fontWeight:500}}>
                     <Icon.mail /> {a.email}
                   </a>
                 </div>
