@@ -1299,11 +1299,6 @@ function ActivityCard({ activity: a }) {
   }
   const handleMouseLeave = () => setTip(null)
 
-  const isFreeCost = (() => {
-    const label = String(a.costCategory || a.costDisplay || '').trim()
-    return label === 'Free'
-  })()
-
   return (
     <button
       type="button"
@@ -1327,8 +1322,8 @@ function ActivityCard({ activity: a }) {
             </div>
           )}
         </div>
-        <span className={`badge ${isFreeCost ? 'blue' : ''}`}>
-          {isFreeCost ? 'Free' : <><Icon.dollar />{a.costCategory || a.costDisplay || '—'}</>}
+        <span className="badge blue">
+          {a.costCategory === 'Free' ? 'Free' : <><Icon.dollar />{a.costCategory || a.costDisplay || '—'}</>}
         </span>
       </div>
       <div className="card-meta">
@@ -1374,7 +1369,7 @@ function ActivityDetail({ id }) {
   }, [activity])
 
   if (loading) return <div className="state-msg" role="status" style={{padding:'4rem'}}><div className="spinner"/><p>Loading…</p></div>
-  if (error) return <div className="state-msg" role="alert" style={{padding:'4rem',color:'#DC2626'}}><p>{error}</p><button style={{marginTop:'1rem',color:'var(--primary)',fontWeight:600}} onClick={()=>navigate('#/search')}>← Back to search</button></div>
+  if (error) return <div className="state-msg" role="alert" style={{padding:'4rem',color:'#DC2626'}}><p>{error}</p><button style={{marginTop:'1rem',color:'var(--blue)',fontWeight:600}} onClick={()=>navigate('#/search')}>← Back to search</button></div>
   if (!activity) return null
 
   const a = activity
@@ -1463,7 +1458,7 @@ function ActivityDetail({ id }) {
               {a.website && a.website !== 'N/A' && (
                 <div className="info-row">
                   <span className="info-label">Website</span>
-                  <a className="info-value" href={a.website.startsWith('http') ? a.website : `https://${a.website}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--primary)',fontWeight:500}}>
+                  <a className="info-value" href={a.website.startsWith('http') ? a.website : `https://${a.website}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--blue)',fontWeight:500}}>
                     <Icon.link /> Visit website ↗<ExtLink />
                   </a>
                 </div>

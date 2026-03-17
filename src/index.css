@@ -20,6 +20,11 @@ html { scroll-behavior: smooth; }
   html { scroll-behavior: auto; }
 }
 
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+}
+
 body {
   font-family: 'DM Sans', sans-serif;
   background: var(--bg);
@@ -324,8 +329,7 @@ nav {
   transition: all 0.2s;
   cursor: pointer;
 }
-.cat-card:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-light); transform: translateY(-2px); box-shadow: 0 4px 12px rgba(54,110,18,0.1); }
-.cat-card:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-light); transform: translateY(-2px); box-shadow: 0 4px 12px rgba(54,110,18,0.1); }
+.cat-card:hover { border-color: var(--blue); color: var(--blue); background: var(--blue-light); transform: translateY(-2px); box-shadow: 0 4px 12px rgba(54,110,18,0.1); }
 .cat-card-icon { font-size: 1.5rem; line-height: 1; }
 
 /* Search results page */
@@ -391,7 +395,7 @@ nav {
 .filter-option:hover {
   background: var(--primary-light);
 }
-.filter-option input[type="checkbox"] { accent-color: var(--primary); width: 15px; height: 15px; cursor: pointer; }
+.filter-option input[type="checkbox"] { accent-color: var(--blue); width: 15px; height: 15px; cursor: pointer; }
 
 /* Distance filter */
 .filter-zip { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); }
@@ -490,7 +494,7 @@ nav {
 /* Cursor-following tooltip on activity cards */
 .card-tooltip {
   position: fixed;
-  transform: translate(8px, -60%);
+  transform: translate(12px, -100%);
   background: var(--text);
   color: var(--white);
   font-size: 0.75rem;
@@ -690,8 +694,6 @@ nav {
   font-size: 0.9rem;
   font-weight: 700;
   color: var(--primary);
-  background: var(--primary-light);
-  border: 1px solid var(--primary-mid);
 }
 .cost-register-card .cost-category {
   font-size: 0.8rem;
