@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import ReactDOM from 'react-dom'
 
 // ─────────────────────────────────────────────
 // CONFIG — set your values here or in .env
@@ -1299,14 +1300,35 @@ function ActivityCard({ activity: a }) {
   }
   const handleMouseLeave = () => setTip(null)
 
+  const isFreeCost = (() => {
+    const label = String(a.costCategory || a.costDisplay || '').trim()
+    return label === 'Free'
+  })()
+
+  const tooltipNode = tip && typeof document !== 'undefined'
+    ? ReactDOM.createPortal(
+        (
+          <span
+            className="card-tooltip"
+            aria-hidden="true"
+            style={{ left: tip.x, top: tip.y }}
+          >
+            Click for more info
+          </span>
+        ),
+        document.body
+      )
+    : null
+
   return (
-    <button
-      type="button"
-      className="activity-card"
-      onClick={() => navigate(`#/activity/${a.id}`)}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={handleMouseLeave}
-    >
+    <>
+      <button
+        type="button"
+        className="activity-card"
+        onClick={() => navigate(`#/activity/${a.id}`)}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
+      >
       <div className="card-top">
         <div>
           <div className="card-name">{a.name}</div>
@@ -1322,8 +1344,8 @@ function ActivityCard({ activity: a }) {
             </div>
           )}
         </div>
-        <span className="badge blue">
-          {a.costCategory === 'Free' ? 'Free' : <><Icon.dollar />{a.costCategory || a.costDisplay || '—'}</>}
+        <span className={`badge ${isFreeCost ? 'badge-cost-free' : ''}`}>
+          {isFreeCost ? 'Free' : <><Icon.dollar />{a.costCategory || a.costDisplay || '—'}</>}
         </span>
       </div>
       <div className="card-meta">
@@ -1332,16 +1354,9 @@ function ActivityCard({ activity: a }) {
         {(Array.isArray(a.type) ? a.type.length > 0 : !!a.type) && <span className="badge blue">{Array.isArray(a.type) ? a.type.join(', ') : a.type}</span>}
         {a.dist != null && <span className="badge">{a.dist.toFixed(1)} mi away</span>}
       </div>
-      {tip && (
-        <span
-          className="card-tooltip"
-          aria-hidden="true"
-          style={{ left: tip.x, top: tip.y }}
-        >
-          Click for more info
-        </span>
-      )}
-    </button>
+      </button>
+      {tooltipNode}
+    </>
   )
 }
 
@@ -1369,7 +1384,7 @@ function ActivityDetail({ id }) {
   }, [activity])
 
   if (loading) return <div className="state-msg" role="status" style={{padding:'4rem'}}><div className="spinner"/><p>Loading…</p></div>
-  if (error) return <div className="state-msg" role="alert" style={{padding:'4rem',color:'#DC2626'}}><p>{error}</p><button style={{marginTop:'1rem',color:'var(--blue)',fontWeight:600}} onClick={()=>navigate('#/search')}>← Back to search</button></div>
+  if (error) return <div className="state-msg" role="alert" style={{padding:'4rem',color:'#DC2626'}}><p>{error}</p><button style={{marginTop:'1rem',color:'var(--primary)',fontWeight:600}} onClick={()=>navigate('#/search')}>← Back to search</button></div>
   if (!activity) return null
 
   const a = activity
@@ -1458,7 +1473,7 @@ function ActivityDetail({ id }) {
               {a.website && a.website !== 'N/A' && (
                 <div className="info-row">
                   <span className="info-label">Website</span>
-                  <a className="info-value" href={a.website.startsWith('http') ? a.website : `https://${a.website}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--blue)',fontWeight:500}}>
+                  <a className="info-value" href={a.website.startsWith('http') ? a.website : `https://${a.website}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--primary)',fontWeight:500}}>
                     <Icon.link /> Visit website ↗<ExtLink />
                   </a>
                 </div>
