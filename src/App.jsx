@@ -12,8 +12,54 @@ const LOCATIONIQ_KEY   = import.meta.env.VITE_LOCATIONIQ_KEY || '' // optional: 
 // ─────────────────────────────────────────────
 // AIRTABLE — maps your exact field names
 // ─────────────────────────────────────────────
+const DATE_EPOCH_YMD = '1970-01-01'
+const DATE_INFINITY_YMD = '9999-12-31'
+
+function pad2(n) {
+  return String(n).padStart(2, '0')
+}
+
+// Use local-date (not UTC) so "today between X and Y" behaves as humans expect.
+function toLocalYMD(d) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+}
+
+function parseAirtableDateToYMD(raw) {
+  if (raw == null || raw === '') return null
+  const d = raw instanceof Date ? raw : new Date(raw)
+  if (Number.isNaN(d.getTime())) return null
+  return toLocalYMD(d)
+}
+
+function findDateFieldKey(fields, kind /* 'start' | 'end' */) {
+  const entries = Object.keys(fields || {})
+  const preferred = entries.find(k => {
+    const kl = k.toLowerCase()
+    if (!kl.includes(kind)) return false
+    return /\bdate\b/i.test(k)
+  })
+  if (preferred) return preferred
+  return entries.find(k => new RegExp(`\\b${kind}\\b`, 'i').test(k))
+}
+
+function extractStartEndYMD(fields) {
+  const startKey = findDateFieldKey(fields, 'start')
+  const endKey = findDateFieldKey(fields, 'end')
+  const startDateYMD = parseAirtableDateToYMD(startKey ? fields[startKey] : null) || DATE_EPOCH_YMD
+  const endDateYMD = parseAirtableDateToYMD(endKey ? fields[endKey] : null) || DATE_INFINITY_YMD
+  return { startDateYMD, endDateYMD }
+}
+
+function isActiveOnToday(activity, todayYMD) {
+  const start = activity.startDateYMD || DATE_EPOCH_YMD
+  const end = activity.endDateYMD || DATE_INFINITY_YMD
+  if (start > end) return false
+  return todayYMD >= start && todayYMD <= end
+}
+
 function mapRecord(record) {
-  const f = record.fields
+  const f = record.fields || {}
+  const { startDateYMD, endDateYMD } = extractStartEndYMD(f)
   return {
     id:               record.id,
     name:             f['Activity Name']          || '',
@@ -49,6 +95,8 @@ function mapRecord(record) {
     lat:              (() => { const v = f['Latitude']; const n = parseFloat(v); return v != null && !isNaN(n) ? n : null })(),
     lng:              (() => { const v = f['Longitude']; const n = parseFloat(v); return v != null && !isNaN(n) ? n : null })(),
     emoji:            f['Emoji']                   || '',
+    startDateYMD,
+    endDateYMD,
   }
 }
 
@@ -105,6 +153,9 @@ async function fetchActivities(filters = {}) {
   } while (offset)
 
   let activities = allRecords.map(mapRecord)
+  // Only show records whose date-range includes "today".
+  const todayYMD = toLocalYMD(new Date())
+  activities = activities.filter(a => isActiveOnToday(a, todayYMD))
 
   // For activities missing lat/lng, try to derive coordinates from their zip code
   activities = activities.map(a => {
@@ -155,7 +206,9 @@ async function fetchActivityById(id) {
     { headers: { Authorization: `Bearer ${AIRTABLE_PAT}` } }
   )
   if (!res.ok) throw new Error('Activity not found')
-  return mapRecord(await res.json())
+  const activity = mapRecord(await res.json())
+  const todayYMD = toLocalYMD(new Date())
+  return isActiveOnToday(activity, todayYMD) ? activity : null
 }
 
 // Airtable field names we use for filters (match your base exactly)
