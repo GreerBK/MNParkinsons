@@ -749,7 +749,11 @@ function Home() {
   const [types, setTypes] = useState([])
   const [typeEmojis, setTypeEmojis] = useState({})
   const { coords: userCoords, loading: locLoading, error: locError, requestLocation } = useUserLocation()
-  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false)
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(() =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      : false
+  )
 
   // When user allows location on home, go straight to search with "near you"
   useEffect(() => {
@@ -807,6 +811,14 @@ function Home() {
   return (
     <div>
       <section className="hero">
+        {!prefersReducedMotion && (
+          <>
+            <div className="hero-video" aria-hidden="true">
+              <video src="/serene.mp4" autoPlay muted loop playsInline />
+            </div>
+            <div className="hero-overlay" aria-hidden="true" />
+          </>
+        )}
         <div className="hero-content">
           <div className="hero-eyebrow">Helping you connect with community</div>
           <h1>Find Your <em>Community</em> in Minnesota</h1>
@@ -872,7 +884,7 @@ function Home() {
 
       <footer>
         <strong>MN Parkinson's Connect</strong> — Helping you connect with community.<br />
-        <span style={{marginTop:'0.5rem',display:'inline-block'}}>Questions? <a href="mailto:info@mnparkinsons.org" style={{color:'#b8ccab'}}>info@mnparkinsons.org</a></span><br />
+        <span style={{marginTop:'0.5rem',display:'inline-block'}}>Questions? <a href="mailto:placeholder@example.com" style={{color:'#b8ccab'}}>placeholder@example.com</a></span><br />
         <span style={{marginTop:'0.5rem',display:'inline-block',opacity:0.9}}>Powered by <a href="https://technextdoormn.com" target="_blank" rel="noopener noreferrer" style={{color:'#b8ccab'}}>Tech Next Door MN<ExtLink /></a></span>
       </footer>
     </div>
