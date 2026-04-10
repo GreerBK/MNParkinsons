@@ -626,9 +626,12 @@ nav {
 
 .detail-grid {
   display: grid;
-  grid-template-columns: 1fr 280px;
+  grid-template-columns: 1fr minmax(0, 280px);
   gap: 1.5rem;
   align-items: start;
+}
+.detail-grid > * {
+  min-width: 0;
 }
 @media (max-width: 680px) {
   .detail-grid { grid-template-columns: 1fr; }
@@ -728,6 +731,8 @@ nav {
   font-size: 0.9rem;
   color: var(--text);
   line-height: 1.5;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 .attend-line + .attend-line {
   margin-top: 0.45rem;
@@ -737,6 +742,7 @@ nav {
   font-weight: 600;
   text-decoration: underline;
   text-underline-offset: 2px;
+  overflow-wrap: anywhere;
 }
 .register-btn {
   display: inline-flex;
