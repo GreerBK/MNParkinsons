@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import ReactDOM from 'react-dom'
 
 // ─────────────────────────────────────────────
@@ -119,6 +119,7 @@ function mapRecord(record) {
     website:          f['Online Website']         || f['Info'] || '',
     caregiverFriendly:f['Caregiver Friendly']     || '',
     description:      f['description']            || f['Description'] || '',
+    additionalDetails: String(getFieldValue(f, ['Additional Details']) || '').trim(),
     status:           f['Status']                 || 'Active',
     lat:              (() => { const v = f['Latitude']; const n = parseFloat(v); return v != null && !isNaN(n) ? n : null })(),
     lng:              (() => { const v = f['Longitude']; const n = parseFloat(v); return v != null && !isNaN(n) ? n : null })(),
@@ -1005,10 +1006,81 @@ const DEFAULT_FILTER_OPTIONS = {
   format: ['In-Person', 'Virtual'],
   daysOfWeek: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
 }
-// Merge data options with defaults so we never show an empty or partial list when landing with a filter
-function mergeOptions(dataOptions, defaultList) {
-  const combined = [...(defaultList || []), ...(dataOptions || [])]
-  return [...new Set(combined)]
+const WEEKDAY_ORDER = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+function unionSortedStrings(...lists) {
+  const merged = [...new Set(lists.flat().filter(Boolean).map(s => String(s).trim()).filter(Boolean))]
+  return merged.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+}
+
+function unionDaysOfWeek(...lists) {
+  const merged = [...new Set(lists.flat().filter(Boolean).map(s => String(s).trim()).filter(Boolean))]
+  return merged.sort((a, b) => {
+    const i = WEEKDAY_ORDER.indexOf(a)
+    const j = WEEKDAY_ORDER.indexOf(b)
+    if (i === -1 && j === -1) return a.localeCompare(b)
+    if (i === -1) return 1
+    if (j === -1) return -1
+    return i - j
+  })
+}
+
+function toggleMulti(arr, item) {
+  if (arr.includes(item)) return arr.filter(x => x !== item)
+  return [...arr, item]
+}
+
+/** Checkbox filter group; shows `initialVisible` options then "View more" for the rest (selected values outside the first chunk stay visible). */
+function FilterGroupMulti({ title, options, value, onChange, initialVisible = 6 }) {
+  const [expanded, setExpanded] = useState(false)
+
+  const displayedOptions = useMemo(() => {
+    if (!options?.length) return []
+    if (expanded || options.length <= initialVisible) return options
+    const head = new Set(options.slice(0, initialVisible))
+    const extraSelected = value.filter(v => options.includes(v) && !head.has(v))
+    const show = new Set([...head, ...extraSelected])
+    return options.filter(o => show.has(o))
+  }, [options, value, expanded, initialVisible])
+
+  const hiddenCount = useMemo(() => {
+    if (expanded || !options?.length) return 0
+    return options.filter(o => !displayedOptions.includes(o)).length
+  }, [options, displayedOptions, expanded])
+
+  return (
+    <fieldset className="filter-group">
+      <legend className="filter-title">{title}</legend>
+      {displayedOptions.map(opt => (
+        <label key={opt} className="filter-option">
+          <input
+            type="checkbox"
+            checked={value.includes(opt)}
+            onChange={() => onChange(toggleMulti(value, opt))}
+          />
+          {opt}
+        </label>
+      ))}
+      {!expanded && hiddenCount > 0 && (
+        <button
+          type="button"
+          className="filter-view-more"
+          onClick={() => setExpanded(true)}
+        >
+          View more ({hiddenCount})
+        </button>
+      )}
+      {expanded && options.length > initialVisible && (
+        <button
+          type="button"
+          className="filter-view-more"
+          onClick={() => setExpanded(false)}
+        >
+          Show less
+        </button>
+      )}
+    </fieldset>
+  )
 }
 
 function SearchResults({ params }) {
@@ -1066,15 +1138,6 @@ function SearchResults({ params }) {
         maxDistance: params.get('distance') ? Number(params.get('distance')) : (hasLocation ? DISTANCE_DEFAULT : undefined),
       })
       setActivities(data)
-      // Merge filter options from data (fallback / supplement when schema API not used)
-      const derived = deriveFilterOptionsFromActivities(data)
-      setFilterOptions(prev => ({
-        activityType: prev.activityType.length ? prev.activityType : derived.activityType,
-        intensity: prev.intensity.length ? prev.intensity : derived.intensity,
-        cost: prev.cost.length ? prev.cost : derived.cost,
-        format: prev.format.length ? prev.format : derived.format,
-        daysOfWeek: prev.daysOfWeek.length ? prev.daysOfWeek : derived.daysOfWeek,
-      }))
     } catch(e) {
       setError(e.message)
     } finally {
@@ -1084,17 +1147,37 @@ function SearchResults({ params }) {
 
   useEffect(() => { load() }, [load])
 
-  // Fetch filter options from Airtable schema once on mount (PAT may need schema.bases:read scope)
-  // Merge with existing so we never overwrite non-empty options with empty (avoids missing filter options)
+  // Full catalog (ignores URL filters) so filter checklists always list every activity type / option,
+  // not only values present in the current filtered result set.
+  useEffect(() => {
+    let cancelled = false
+    fetchActivities({})
+      .then(acts => {
+        if (cancelled) return
+        const derived = deriveFilterOptionsFromActivities(acts)
+        setFilterOptions(prev => ({
+          activityType: unionSortedStrings(derived.activityType, prev.activityType, DEFAULT_FILTER_OPTIONS.activityType),
+          intensity: unionSortedStrings(derived.intensity, prev.intensity, DEFAULT_FILTER_OPTIONS.intensity),
+          cost: unionSortedStrings(derived.cost, prev.cost, DEFAULT_FILTER_OPTIONS.cost),
+          format: unionSortedStrings(derived.format, prev.format, DEFAULT_FILTER_OPTIONS.format),
+          daysOfWeek: unionDaysOfWeek(derived.daysOfWeek, prev.daysOfWeek, DEFAULT_FILTER_OPTIONS.daysOfWeek),
+        }))
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
+  // Fetch filter options from Airtable schema once on mount (PAT may need schema.bases:read scope).
+  // Union with record-derived lists so select fields stay complete.
   useEffect(() => {
     fetchFilterOptionsFromSchema().then(opts => {
       if (!opts) return
       setFilterOptions(prev => ({
-        activityType: (opts.activityType?.length ? opts.activityType : prev.activityType) || [],
-        intensity: (opts.intensity?.length ? opts.intensity : prev.intensity) || [],
-        cost: (opts.cost?.length ? opts.cost : prev.cost) || [],
-        format: (opts.format?.length ? opts.format : prev.format) || [],
-        daysOfWeek: (opts.daysOfWeek?.length ? opts.daysOfWeek : prev.daysOfWeek) || [],
+        activityType: unionSortedStrings(opts.activityType, prev.activityType),
+        intensity: unionSortedStrings(opts.intensity, prev.intensity),
+        cost: unionSortedStrings(opts.cost, prev.cost),
+        format: unionSortedStrings(opts.format, prev.format),
+        daysOfWeek: unionDaysOfWeek(opts.daysOfWeek, prev.daysOfWeek),
       }))
     })
   }, [])
@@ -1219,27 +1302,6 @@ function SearchResults({ params }) {
     navigate('#/search' + (keep.toString() ? `?${keep.toString()}` : ''))
   }
 
-  const toggleMulti = (arr, item) => {
-    if (arr.includes(item)) return arr.filter(x => x !== item)
-    return [...arr, item]
-  }
-
-  const FilterGroupMulti = ({ title, options, value, onChange }) => (
-    <fieldset className="filter-group">
-      <legend className="filter-title">{title}</legend>
-      {options.map(opt => (
-        <label key={opt} className="filter-option">
-          <input
-            type="checkbox"
-            checked={value.includes(opt)}
-            onChange={() => onChange(toggleMulti(value, opt))}
-          />
-          {opt}
-        </label>
-      ))}
-    </fieldset>
-  )
-
   const activeFilterCount = selType.length + selIntensity.length + selCost.length + selFormat.length + selDays.length
 
   // Build list of active filter chips for display above results
@@ -1314,11 +1376,11 @@ function SearchResults({ params }) {
             )}
           </div>
 
-          <FilterGroupMulti title="Activity Type" options={mergeOptions(filterOptions.activityType, DEFAULT_FILTER_OPTIONS.activityType)} value={selType} onChange={setSelType} />
-          <FilterGroupMulti title="Intensity" options={mergeOptions(filterOptions.intensity, DEFAULT_FILTER_OPTIONS.intensity)} value={selIntensity} onChange={setSelIntensity} />
-          <FilterGroupMulti title="Cost" options={mergeOptions(filterOptions.cost, DEFAULT_FILTER_OPTIONS.cost)} value={selCost} onChange={setSelCost} />
-          <FilterGroupMulti title="Format" options={mergeOptions(filterOptions.format, DEFAULT_FILTER_OPTIONS.format)} value={selFormat} onChange={setSelFormat} />
-          <FilterGroupMulti title="Days of week" options={mergeOptions(filterOptions.daysOfWeek, DEFAULT_FILTER_OPTIONS.daysOfWeek)} value={selDays} onChange={setSelDays} />
+          <FilterGroupMulti title="Activity Type" options={unionSortedStrings(filterOptions.activityType, DEFAULT_FILTER_OPTIONS.activityType)} value={selType} onChange={setSelType} initialVisible={6} />
+          <FilterGroupMulti title="Intensity" options={unionSortedStrings(filterOptions.intensity, DEFAULT_FILTER_OPTIONS.intensity)} value={selIntensity} onChange={setSelIntensity} initialVisible={5} />
+          <FilterGroupMulti title="Cost" options={unionSortedStrings(filterOptions.cost, DEFAULT_FILTER_OPTIONS.cost)} value={selCost} onChange={setSelCost} initialVisible={5} />
+          <FilterGroupMulti title="Format" options={unionSortedStrings(filterOptions.format, DEFAULT_FILTER_OPTIONS.format)} value={selFormat} onChange={setSelFormat} initialVisible={5} />
+          <FilterGroupMulti title="Days of week" options={unionDaysOfWeek(filterOptions.daysOfWeek, DEFAULT_FILTER_OPTIONS.daysOfWeek)} value={selDays} onChange={setSelDays} initialVisible={7} />
 
           <fieldset className="filter-distance" aria-describedby="distance-help">
             <legend className="filter-title">Distance from you</legend>
@@ -1586,6 +1648,7 @@ function ActivityDetail({ id }) {
               <Row label="Format" value={a.format} />
               <Row label="Caregiver Friendly" value={a.caregiverFriendly} />
               <Row label="Description" value={a.description} preserveNewlines />
+              <Row label="Additional Details" value={a.additionalDetails} preserveNewlines />
             </div>
 
             <div className="info-card">

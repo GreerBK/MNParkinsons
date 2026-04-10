@@ -397,6 +397,26 @@ nav {
 }
 .filter-option input[type="checkbox"] { accent-color: var(--primary); width: 15px; height: 15px; cursor: pointer; }
 
+.filter-view-more {
+  display: block;
+  width: 100%;
+  margin: 0.35rem 0 0;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--primary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 6px;
+}
+.filter-view-more:hover,
+.filter-view-more:focus-visible {
+  background: var(--primary-light);
+  outline: none;
+}
+
 /* Distance filter */
 .filter-zip { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); }
 .filter-zip-input {
