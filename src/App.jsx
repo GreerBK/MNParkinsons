@@ -50,6 +50,19 @@ function extractStartEndYMD(fields) {
   return { startDateYMD, endDateYMD }
 }
 
+function getFieldValue(fields, candidateNames) {
+  if (!fields) return ''
+  for (const name of (candidateNames || [])) {
+    if (name in fields) return fields[name]
+  }
+  const entries = Object.keys(fields)
+  const norm = (s) => String(s || '').trim().toLowerCase()
+  const wanted = new Set((candidateNames || []).map(norm).filter(Boolean))
+  if (!wanted.size) return ''
+  const key = entries.find(k => wanted.has(norm(k)))
+  return key ? fields[key] : ''
+}
+
 function isActiveOnToday(activity, todayYMD) {
   const start = activity.startDateYMD || DATE_EPOCH_YMD
   const end = activity.endDateYMD || DATE_INFINITY_YMD
@@ -57,12 +70,25 @@ function isActiveOnToday(activity, todayYMD) {
   return todayYMD >= start && todayYMD <= end
 }
 
+function normalizeDisplayName(name) {
+  let s = String(name || '')
+  if (!s) return ''
+  // Fix common misspelling seen in source data.
+  s = s.replace(/Excerise\s*\(\s*Exercise\s*\)/gi, 'Exercise')
+  s = s.replace(/Excerise/gi, 'Exercise')
+  // Remove redundant "(Exercise)" and stray trailing parens.
+  s = s.replace(/\(\s*Exercise\s*\)/gi, '')
+  s = s.replace(/\s*\)+\s*$/, '')
+  s = s.replace(/\s{2,}/g, ' ').trim()
+  return s
+}
+
 function mapRecord(record) {
   const f = record.fields || {}
   const { startDateYMD, endDateYMD } = extractStartEndYMD(f)
   return {
     id:               record.id,
-    name:             f['Activity Name']          || '',
+    name:             normalizeDisplayName(f['Activity Name'] || ''),
     type:             (() => {
       const raw = f['Activity Type'] ?? f['Type of Activity']
       return Array.isArray(raw) ? raw : (raw ? [raw] : [])
@@ -71,7 +97,7 @@ function mapRecord(record) {
     address:          f['Address']                || '',
     zip:              String(f['Activity Zip Code'] || ''),
     format:           f['Virtual/In-Person/Hybrid'] || 'In-Person',
-    schedule:         f['Days/Times Meeting']     || '',
+    schedule:         String(getFieldValue(f, ['Schedule', 'Days/Times Meeting']) || '').trim(),
     daysOfWeek:       (() => {
       const raw = f['Days of Week'] ?? f['Day of Week'] ?? f['Days of the Week'] ?? f['Meeting Days']
       if (Array.isArray(raw)) return raw.join(', ')
@@ -89,8 +115,10 @@ function mapRecord(record) {
     email:            f['Program Email Address']  || '',
     phone:            f['Site Phone #']           || f['Phone Info'] || '',
     registrationLink: f['Registration Link'] || '',
+    howToAttend:      f['How to Attend'] || f['How to attend'] || f['Attendance Instructions'] || '',
     website:          f['Online Website']         || f['Info'] || '',
     caregiverFriendly:f['Caregiver Friendly']     || '',
+    description:      f['description']            || f['Description'] || '',
     status:           f['Status']                 || 'Active',
     lat:              (() => { const v = f['Latitude']; const n = parseFloat(v); return v != null && !isNaN(n) ? n : null })(),
     lng:              (() => { const v = f['Longitude']; const n = parseFloat(v); return v != null && !isNaN(n) ? n : null })(),
@@ -502,6 +530,69 @@ function parseHash(hash) {
 // ─────────────────────────────────────────────
 // WCAG: screen reader indicator for links that open in a new tab
 const ExtLink = () => <span className="sr-only"> (opens in new tab)</span>
+
+function ensureHttpUrl(raw) {
+  const value = String(raw || '').trim()
+  if (!value) return ''
+  if (/^(https?:\/\/|mailto:|tel:)/i.test(value)) return value
+  return `https://${value}`
+}
+
+function isLikelyUrl(value) {
+  const s = String(value || '').trim()
+  if (!s) return false
+  return /^https?:\/\//i.test(s) || /^www\./i.test(s) || /\.[a-z]{2,}(?:\/|$)/i.test(s)
+}
+
+function renderInstructionTextWithLinks(text) {
+  const raw = String(text || '').trim()
+  if (!raw) return null
+
+  const markdownLinkRe = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi
+  const plainUrlRe = /(https?:\/\/[^\s]+|www\.[^\s]+)/gi
+  const lines = raw.split(/\r?\n/)
+
+  const renderLine = (line, keyPrefix) => {
+    const nodes = []
+    let idx = 0
+    let m
+    markdownLinkRe.lastIndex = 0
+    while ((m = markdownLinkRe.exec(line)) !== null) {
+      if (m.index > idx) nodes.push(line.slice(idx, m.index))
+      const href = ensureHttpUrl(m[2])
+      nodes.push(
+        <a key={`${keyPrefix}-md-${m.index}`} href={href} target="_blank" rel="noopener noreferrer">
+          {m[1]}<ExtLink />
+        </a>
+      )
+      idx = m.index + m[0].length
+    }
+    const afterMarkdown = line.slice(idx)
+    if (!afterMarkdown) return nodes
+
+    let urlIdx = 0
+    let um
+    plainUrlRe.lastIndex = 0
+    while ((um = plainUrlRe.exec(afterMarkdown)) !== null) {
+      if (um.index > urlIdx) nodes.push(afterMarkdown.slice(urlIdx, um.index))
+      const href = ensureHttpUrl(um[0])
+      nodes.push(
+        <a key={`${keyPrefix}-url-${um.index}`} href={href} target="_blank" rel="noopener noreferrer">
+          {um[0]}<ExtLink />
+        </a>
+      )
+      urlIdx = um.index + um[0].length
+    }
+    if (urlIdx < afterMarkdown.length) nodes.push(afterMarkdown.slice(urlIdx))
+    return nodes
+  }
+
+  return lines.map((line, i) => (
+    <p key={`attend-line-${i}`} className="attend-line">
+      {renderLine(line, `attend-${i}`)}
+    </p>
+  ))
+}
 
 const Icon = {
   search: () => (
@@ -1454,10 +1545,12 @@ function ActivityDetail({ id }) {
 
   const a = activity
 
-  const Row = ({ label, value }) => value ? (
+  const Row = ({ label, value, preserveNewlines = false }) => value ? (
     <div className="info-row">
       <span className="info-label">{label}</span>
-      <span className="info-value">{value}</span>
+      <span className="info-value" style={preserveNewlines ? { whiteSpace: 'pre-wrap' } : undefined}>
+        {value}
+      </span>
     </div>
   ) : null
 
@@ -1488,21 +1581,19 @@ function ActivityDetail({ id }) {
             <div className="info-card">
               <h2>Schedule & Logistics</h2>
               <Row label="Days & Times" value={a.schedule} />
-              <Row label="Days of Week" value={a.daysOfWeek} />
               <Row label="Time of Day" value={a.timeOfDay} />
               <Row label="Intensity" value={a.intensity} />
               <Row label="Format" value={a.format} />
               <Row label="Caregiver Friendly" value={a.caregiverFriendly} />
+              <Row label="Description" value={a.description} preserveNewlines />
             </div>
 
             <div className="info-card">
               <h2>Location</h2>
               <Row label="Venue" value={a.location} />
-              <Row label="Address" value={a.format !== 'Virtual' ? a.address : null} />
-              <Row label="Zip Code" value={a.format !== 'Virtual' ? a.zip : null} />
-              {a.lat && a.lng && a.format !== 'Virtual' && (
+              {a.format !== 'Virtual' && a.address && (
                 <div className="info-row">
-                  <span className="info-label">Map</span>
+                  <span className="info-label">Address</span>
                   <a
                     className="info-value"
                     style={{color:'var(--primary)',fontWeight:500}}
@@ -1510,10 +1601,11 @@ function ActivityDetail({ id }) {
                     target="_blank"
                     rel="noopener noreferrer"
                   >
-                    Open in Google Maps ↗<ExtLink />
+                    {a.address}<ExtLink />
                   </a>
                 </div>
               )}
+              <Row label="Zip Code" value={a.format !== 'Virtual' ? a.zip : null} />
             </div>
 
             <div className="info-card">
@@ -1521,7 +1613,7 @@ function ActivityDetail({ id }) {
               <Row label="Contact" value={a.contact} />
               {a.phone && (
                 <div className="info-row">
-                  <span className="info-label">Phone</span>
+                  <span className="info-label">Site Phone #</span>
                   <a className="info-value" href={`tel:${a.phone}`} style={{color:'var(--primary)',fontWeight:500}}>
                     <Icon.phone /> {a.phone}
                   </a>
@@ -1563,19 +1655,19 @@ function ActivityDetail({ id }) {
                 )}
               </div>
               {(() => {
-                const raw = (a.registrationLink || '').trim()
-                if (!raw || /^(n\/a|na|tbd|-|—)$/i.test(raw)) return null
-                const href = raw.startsWith('http://') || raw.startsWith('https://') ? raw : `https://${raw}`
-                if (href.length < 12 || !href.includes('.')) return null
+                const fallbackLink = (a.registrationLink || '').trim()
+                const fallbackText = (fallbackLink && isLikelyUrl(fallbackLink))
+                  ? `Register online: ${fallbackLink}`
+                  : ''
+                const instructionText = String(a.howToAttend || '').trim() || fallbackText
+                if (!instructionText || /^(n\/a|na|tbd|-|—)$/i.test(instructionText)) return null
                 return (
-                  <a
-                    className="register-btn"
-                    href={href}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    <Icon.link /> Register / Sign up<ExtLink />
-                  </a>
+                  <div className="attend-section">
+                    <h3 className="attend-title">How to attend</h3>
+                    <div className="attend-content">
+                      {renderInstructionTextWithLinks(instructionText)}
+                    </div>
+                  </div>
                 )
               })()}
             </div>
