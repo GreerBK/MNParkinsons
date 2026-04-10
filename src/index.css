@@ -711,6 +711,33 @@ nav {
   color: var(--text);
   font-weight: 500;
 }
+.attend-section {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+.attend-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+.attend-content {
+  font-size: 0.9rem;
+  color: var(--text);
+  line-height: 1.5;
+}
+.attend-line + .attend-line {
+  margin-top: 0.45rem;
+}
+.attend-content a {
+  color: var(--primary);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 .register-btn {
   display: inline-flex;
   align-items: center;
