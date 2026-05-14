@@ -2,11 +2,8 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import ReactDOM from 'react-dom'
 
 // ─────────────────────────────────────────────
-// CONFIG — set your values here or in .env
+// CONFIG
 // ─────────────────────────────────────────────
-const AIRTABLE_PAT     = import.meta.env.VITE_AIRTABLE_PAT || ''
-const AIRTABLE_BASE_ID = import.meta.env.VITE_AIRTABLE_BASE_ID || 'appKtPJiD3Pex9ai1'
-const AIRTABLE_TABLE_ID = import.meta.env.VITE_AIRTABLE_TABLE_ID || 'tblfEZNHgfRwvvVJc'
 const LOCATIONIQ_KEY   = import.meta.env.VITE_LOCATIONIQ_KEY || '' // optional: free at locationiq.com, for zip→coords when Zippopotam is blocked
 
 // ─────────────────────────────────────────────
@@ -130,58 +127,20 @@ function mapRecord(record) {
 }
 
 async function fetchActivities(filters = {}) {
-  if (!AIRTABLE_PAT) throw new Error('Missing VITE_AIRTABLE_PAT. Add it to your .env file.')
-  const conditions = [`{Status} = 'Active'`]
-
-  // Search: use SEARCH() only on text fields. Avoid LOWER() in filterByFormula (can cause 422).
-  // SEARCH is case-insensitive in Airtable. Keep to fields that exist in your base.
-  if (filters.q) {
-    const q = String(filters.q).trim().replace(/'/g, "\\'")
-    if (q) {
-      const searchParts = [
-        `SEARCH('${q}', {Activity Name})`,
-        `SEARCH('${q}', {Location})`,
-        `SEARCH('${q}', {Address})`,
-      ]
-      conditions.push(`OR(${searchParts.join(', ')})`)
-    }
-  }
   const arr = (v) => (Array.isArray(v) ? v : v ? [v] : [])
-  const typeVals = arr(filters.type)
-  if (typeVals.length) conditions.push(`OR(${typeVals.map(t => `SEARCH('${String(t).replace(/'/g, "\\'")}', {Activity Type})`).join(',')})`)
-  const intensityVals = arr(filters.intensity)
-  if (intensityVals.length) conditions.push(`OR(${intensityVals.map(i => `SEARCH('${String(i).replace(/'/g, "\\'")}', {Intensity})`).join(',')})`)
-  const costVals = arr(filters.cost)
-  if (costVals.length) conditions.push(`OR(${costVals.map(c => `{Cost Category} = '${String(c).replace(/'/g, "\\'")}'`).join(',')})`)
-  const formatVals = arr(filters.format)
-  if (formatVals.length) conditions.push(`OR(${formatVals.map(f => `{Virtual/In-Person/Hybrid} = '${String(f).replace(/'/g, "\\'")}'`).join(',')})`)
-  const daysVals = arr(filters.daysOfWeek)
-  if (daysVals.length) conditions.push(`OR(${daysVals.map(d => `SEARCH('${String(d).replace(/'/g, "\\'")}', {Days of Week})`).join(',')})`)
+  const params = new URLSearchParams()
+  if (filters.q) params.set('q', String(filters.q).trim())
+  arr(filters.type).forEach(t => params.append('type', t))
+  arr(filters.intensity).forEach(i => params.append('intensity', i))
+  arr(filters.cost).forEach(c => params.append('cost', c))
+  arr(filters.format).forEach(f => params.append('format', f))
+  arr(filters.daysOfWeek).forEach(d => params.append('daysOfWeek', d))
 
-  // NOTE: We intentionally do NOT filter by zip prefix server-side.
-  // The old approach (SEARCH 3-digit prefix) was too aggressive and excluded
-  // nearby activities with different zip prefixes. Instead, we fetch all Active
-  // records and let the client-side distance filter do the work.
+  const res = await fetch(`/api/activities?${params}`)
+  if (!res.ok) throw new Error(`Airtable error: ${res.status}`)
+  const { records } = await res.json()
 
-  const formula = conditions.length > 1 ? `AND(${conditions.join(',')})` : conditions[0]
-  const baseUrl = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}`
-  let allRecords = []
-  let offset = undefined
-  do {
-    const url = new URL(baseUrl)
-    url.searchParams.set('filterByFormula', formula)
-    url.searchParams.set('pageSize', '100')
-    if (offset) url.searchParams.set('offset', offset)
-    const res = await fetch(url.toString(), {
-      headers: { Authorization: `Bearer ${AIRTABLE_PAT}` }
-    })
-    if (!res.ok) throw new Error(`Airtable error: ${res.status}`)
-    const data = await res.json()
-    allRecords = allRecords.concat(data.records)
-    offset = data.offset
-  } while (offset)
-
-  let activities = allRecords.map(mapRecord)
+  let activities = records.map(mapRecord)
   // Only show records whose date-range includes "today".
   const todayYMD = toLocalYMD(new Date())
   activities = activities.filter(a => isActiveOnToday(a, todayYMD))
@@ -230,63 +189,19 @@ async function fetchActivities(filters = {}) {
 }
 
 async function fetchActivityById(id) {
-  const res = await fetch(
-    `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${id}`,
-    { headers: { Authorization: `Bearer ${AIRTABLE_PAT}` } }
-  )
+  const res = await fetch(`/api/activity/${encodeURIComponent(id)}`)
   if (!res.ok) throw new Error('Activity not found')
   const activity = mapRecord(await res.json())
   const todayYMD = toLocalYMD(new Date())
   return isActiveOnToday(activity, todayYMD) ? activity : null
 }
 
-// Airtable field names we use for filters (match your base exactly)
-const FILTER_FIELD_NAMES = {
-  activityType: ['Activity Type', 'Type of Activity'],
-  intensity: ['Level of Intensity', 'Intensity'],
-  cost: ['Cost Category', 'Cost'],
-  format: ['Virtual/In-Person/Hybrid', 'Format'],
-  daysOfWeek: ['Days of Week', 'Day of Week', 'Days of the Week', 'Meeting Days'],
-}
-
-// Get select/multi-select choices from schema. Returns { activityType: [], intensity: [], ... }.
-function getChoicesFromField(field) {
-  if (!field || !field.options || !field.options.choices) return []
-  return field.options.choices.map(c => (typeof c === 'string' ? c : c.name)).filter(Boolean)
-}
 
 async function fetchFilterOptionsFromSchema() {
-  if (!AIRTABLE_BASE_ID || !AIRTABLE_TABLE_ID) return null
   try {
-    const res = await fetch(
-      `https://api.airtable.com/v0/meta/bases/${AIRTABLE_BASE_ID}/tables`,
-      { headers: { Authorization: `Bearer ${AIRTABLE_PAT}` } }
-    )
+    const res = await fetch('/api/filter-options')
     if (!res.ok) return null
-    const data = await res.json()
-    const table = data.tables?.find(t => t.id === AIRTABLE_TABLE_ID)
-    if (!table || !Array.isArray(table.fields)) return null
-    const out = { activityType: [], intensity: [], cost: [], format: [], daysOfWeek: [] }
-    const fieldTypes = ['singleSelect', 'multipleSelects']
-    for (const field of table.fields) {
-      const name = field.name
-      if (!fieldTypes.includes(field.type)) continue
-      const choices = getChoicesFromField(field)
-      const DAY_ORDER = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
-      if (FILTER_FIELD_NAMES.activityType.some(n => n === name)) out.activityType = choices
-      else if (FILTER_FIELD_NAMES.intensity.some(n => n === name)) out.intensity = choices
-      else if (FILTER_FIELD_NAMES.cost.some(n => n === name)) out.cost = choices
-      else if (FILTER_FIELD_NAMES.format.some(n => n === name)) out.format = choices
-      else if (FILTER_FIELD_NAMES.daysOfWeek.some(n => n === name)) {
-        out.daysOfWeek = [...choices].sort((a, b) => {
-          const i = DAY_ORDER.indexOf(a); const j = DAY_ORDER.indexOf(b)
-          if (i === -1 && j === -1) return a.localeCompare(b)
-          if (i === -1) return 1; if (j === -1) return -1
-          return i - j
-        })
-      }
-    }
-    return out
+    return await res.json()
   } catch {
     return null
   }
@@ -1457,7 +1372,7 @@ function SearchResults({ params }) {
           ) : error ? (
             <div className="state-msg" role="alert" style={{color:'#DC2626'}}>
               <p><strong>Error:</strong> {error}</p>
-              <p style={{marginTop:'0.5rem',fontSize:'0.85rem'}}>Check that your AIRTABLE_PAT is set in your .env file.</p>
+              <p style={{marginTop:'0.5rem',fontSize:'0.85rem'}}>Check that AIRTABLE_PAT is set in your Cloudflare Pages environment variables.</p>
             </div>
           ) : (
             <>
@@ -1693,7 +1608,7 @@ function ActivityDetail({ id }) {
               {a.website && a.website !== 'N/A' && (
                 <div className="info-row">
                   <span className="info-label">Website</span>
-                  <a className="info-value" href={a.website.startsWith('http') ? a.website : `https://${a.website}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--primary)',fontWeight:500}}>
+                  <a className="info-value" href={(() => { try { const u = new URL(a.website.startsWith('http') ? a.website : `https://${a.website}`); return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : '#' } catch { return '#' } })()} target="_blank" rel="noopener noreferrer" style={{color:'var(--primary)',fontWeight:500}}>
                     <Icon.link /> Visit website ↗<ExtLink />
                   </a>
                 </div>
