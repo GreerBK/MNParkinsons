@@ -915,3 +915,174 @@ footer strong { color: #fcfffa; }
     max-width: 100%;
   }
 }
+
+/* ─────────────────────────────────────────────
+   Activity detail page — sleeker layout
+   ───────────────────────────────────────────── */
+
+/* Subtle "at" in venue subtitle */
+.detail-venue-at {
+  color: var(--muted);
+  font-weight: 400;
+  font-style: italic;
+  margin-right: 0.2rem;
+}
+
+/* Day/time grid — replaces the messy semicolon-joined schedule blob */
+.schedule-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.5rem 1.5rem;
+  margin: 0 0 0.85rem 0;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+.schedule-list:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+.schedule-row { display: contents; }
+.schedule-day {
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 600;
+  align-self: start;
+  padding-top: 0.1rem;
+  margin: 0;
+}
+.schedule-times {
+  color: var(--text);
+  font-weight: 500;
+  font-size: 0.95rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin: 0;
+}
+
+/* Multiple phones stacked, each its own tel: link */
+.phone-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  align-items: flex-start;
+}
+
+/* Generic clickable contact value (phone, email) */
+.contact-link {
+  color: var(--primary);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.contact-link:hover { text-decoration: underline; }
+
+/* Action-only row (no label) for things like "Get directions" */
+.info-row-action {
+  padding-top: 0.35rem;
+  border-bottom: 1px solid var(--border);
+}
+.info-row-action:last-child { border-bottom: none; }
+
+/* "Get directions" subtle link under the address */
+.directions-link {
+  color: var(--primary);
+  font-weight: 500;
+  font-size: 0.88rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  text-decoration: none;
+}
+.directions-link:hover { text-decoration: underline; }
+
+/* Long-form description body */
+.description-body {
+  color: var(--text);
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+.description-body p { margin: 0 0 0.5rem 0; }
+.description-body p:last-child { margin-bottom: 0; }
+
+/* Register CTA — primary action on the detail page */
+.register-cta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  width: 100%;
+  margin-top: 1rem;
+  padding: 0.85rem 1rem;
+  background: var(--primary);
+  color: var(--white);
+  font-weight: 600;
+  font-size: 1rem;
+  border-radius: 8px;
+  text-decoration: none;
+  box-shadow: 0 1px 2px rgba(54, 110, 18, 0.18);
+  transition: background 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
+}
+.register-cta:hover {
+  background: var(--primary-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(54, 110, 18, 0.22);
+}
+.register-cta:focus-visible {
+  outline: 3px solid var(--primary-mid);
+  outline-offset: 2px;
+}
+.register-cta-arrow {
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+.register-cta:hover .register-cta-arrow {
+  transform: translateX(3px);
+}
+
+/* "More info" subtle link beneath the register button */
+.more-info {
+  margin: 0.7rem 0 0 0;
+  text-align: center;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+.more-info a {
+  color: var(--primary);
+  font-weight: 600;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.more-info a:hover { text-decoration: underline; }
+
+/* Sticky behavior: apply to the grid item (aside), not the card itself,
+   so the card can stick within the tall main column.
+   On mobile the grid collapses to one column — no stickiness needed. */
+.sidebar-card {
+  position: static;
+  top: auto;
+}
+.detail-grid > aside {
+  align-self: start;
+}
+@media (min-width: 681px) {
+  .detail-grid > aside {
+    position: sticky;
+    top: 80px;
+  }
+}
+
+/* Respect prefers-reduced-motion for the CTA animations */
+@media (prefers-reduced-motion: reduce) {
+  .register-cta,
+  .register-cta-arrow {
+    transition: none;
+  }
+  .register-cta:hover {
+    transform: none;
+  }
+}
