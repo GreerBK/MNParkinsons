@@ -1528,7 +1528,14 @@ function ActivityDetail({ id }) {
   const websiteUrl = websiteRaw && !/^(n\/?a|none|tbd|-|—)$/i.test(websiteRaw)
     ? safeHttpUrl(websiteRaw)
     : null
-  const registrationUrl = safeHttpUrl(a.registrationLink)
+  const registrationRaw = String(a.registrationLink || '').trim()
+  const registrationUrl = safeHttpUrl(registrationRaw)
+  // Some activities use the Registration Link field to hold an email
+  // ("email me to sign up"). Detect that so we can render a mailto:
+  // button instead of dropping the CTA.
+  const registrationEmail = (!registrationUrl && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(registrationRaw))
+    ? registrationRaw
+    : null
   const directionsUrl = a.address
     ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(a.address)}`
     : null
@@ -1698,6 +1705,16 @@ function ActivityDetail({ id }) {
                   <span>Register now</span>
                   <span className="register-cta-arrow" aria-hidden="true">→</span>
                   <ExtLink />
+                </a>
+              )}
+              {!registrationUrl && registrationEmail && (
+                <a
+                  href={`mailto:${registrationEmail}?subject=${encodeURIComponent('Sign-up: ' + a.name)}`}
+                  className="register-cta"
+                  aria-label={`Email ${registrationEmail} to register for ${a.name}`}
+                >
+                  <Icon.mail />
+                  <span>Email to register</span>
                 </a>
               )}
 
