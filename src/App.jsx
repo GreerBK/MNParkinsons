@@ -888,7 +888,7 @@ function Home() {
             ))}
           </div>
         ) : (
-          <div className="state-msg" role="status"><div className="spinner" /><p>Loading categories…</p></div>
+          <div className="state-msg" role="status"><div className="spinner" aria-hidden="true" /><p>Loading categories…</p></div>
         )}
       </section>
 
@@ -1323,19 +1323,20 @@ function SearchResults({ params }) {
               value={zip}
               onChange={e => setZip(e.target.value)}
               maxLength={5}
+              aria-describedby={locError ? 'filter-loc-error' : undefined}
             />
               <button
                 type="button"
                 onClick={requestLocation}
                 disabled={locLoading}
-                title="Use my location"
                 className="btn-loc"
+                aria-describedby={locError ? 'filter-loc-error' : undefined}
               >
-                <span className="btn-loc-icon">{locLoading ? <span className="btn-loc-spinner" /> : <Icon.location />}</span>
-                <span className="btn-loc-label">Use my location</span>
+                <span className="btn-loc-icon" aria-hidden="true">{locLoading ? <span className="btn-loc-spinner" /> : <Icon.location />}</span>
+                <span className="btn-loc-label">{locLoading ? 'Locating…' : 'Use my location'}</span>
               </button>
             </div>
-              {locError && <span className="loc-error">{locError}</span>}
+              {locError && <span id="filter-loc-error" className="loc-error" role="alert">{locError}</span>}
             {((zip && /^\d{5}$/.test(zip)) || userCoords || params.get('lat')) && (
             <>
               <div className="distance-slider-label">Within <strong>{maxDistance ?? DISTANCE_DEFAULT} miles</strong></div>
@@ -1376,7 +1377,7 @@ function SearchResults({ params }) {
         {/* Results */}
         <section aria-labelledby="results-heading">
           {loading ? (
-            <div className="state-msg" role="status"><div className="spinner"/><p>Loading activities…</p></div>
+            <div className="state-msg" role="status"><div className="spinner" aria-hidden="true"/><p>Loading activities…</p></div>
           ) : error ? (
             <div className="state-msg state-msg-error" role="alert">
               <p><strong>We couldn't load activities right now.</strong></p>
@@ -1507,9 +1508,9 @@ function ActivityDetail({ id }) {
     <div className="state-msg state-msg-error" role="alert" style={{padding:'4rem'}}>
       <p><strong>We couldn't load this activity.</strong></p>
       <p style={{marginTop:'0.5rem',fontSize:'0.9rem'}}>The link may be out of date or the activity is no longer listed.</p>
-      <button className="state-msg-action" onClick={()=>navigate('#/search')}>
+      <a className="state-msg-action" href="#/search">
         <Icon.back /> Back to search
-      </button>
+      </a>
     </div>
   )
   if (!activity) return null
@@ -1848,11 +1849,15 @@ export default function App() {
     setDisclaimerAccepted(true)
   }, [])
 
+  // Move focus to main on every route change so screen-reader users
+  // start at the new page content (not stuck on the previous page's
+  // last-focused element). Also fires once after the disclaimer is
+  // dismissed so users land in the content, not at document.body.
   useEffect(() => {
-    if (mainRef.current) {
+    if (disclaimerAccepted && mainRef.current) {
       mainRef.current.focus()
     }
-  }, [hash])
+  }, [hash, disclaimerAccepted])
 
   // WCAG 2.4.2 — update page title on route change
   useEffect(() => {
