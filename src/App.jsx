@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import ReactDOM from 'react-dom'
 import MN_ZIP_COORDS from './mnZipCoords'
 
 // ─────────────────────────────────────────────
@@ -723,25 +722,30 @@ function ScrollToTop() {
 // NAV
 // ─────────────────────────────────────────────
 function Nav() {
+  // Use anchor tags (semantically correct for navigation) and mark the active
+  // page with aria-current="page" so screen readers announce "you are here".
+  const hash = useRoute()
+  const { path } = parseHash(hash)
+  const onHome = path === '/' || path === ''
+  const onSearch = path === '/search'
   return (
     <nav aria-label="Main site navigation">
       <div className="nav-inner">
-        <button
-          type="button"
+        <a
+          href="#/"
           className="nav-logo"
-          onClick={() => navigate('#/')}
           aria-label="MN Parkinson's Connect home"
+          aria-current={onHome ? 'page' : undefined}
         >
           MN <span>Parkinson's Connect</span>
-        </button>
-        <button
-          type="button"
-          className="btn btn-outline"
-          style={{fontSize:'0.82rem'}}
-          onClick={() => navigate('#/search')}
+        </a>
+        <a
+          href="#/search"
+          className="btn btn-outline nav-cta"
+          aria-current={onSearch ? 'page' : undefined}
         >
           Find activities near you
-        </button>
+        </a>
       </div>
     </nav>
   )
@@ -850,14 +854,14 @@ function Home() {
             type="button"
             onClick={requestLocation}
             disabled={locLoading}
-            title="Use my location"
             className="btn-loc"
+            aria-describedby={locError ? 'home-loc-error' : undefined}
           >
-            <span className="btn-loc-icon">{locLoading ? <span className="btn-loc-spinner" /> : <Icon.location />}</span>
-            <span className="btn-loc-label">Use my location</span>
+            <span className="btn-loc-icon" aria-hidden="true">{locLoading ? <span className="btn-loc-spinner" /> : <Icon.location />}</span>
+            <span className="btn-loc-label">{locLoading ? 'Locating…' : 'Use my location'}</span>
           </button>
           {locError && (
-            <span className="loc-error" role="alert">
+            <span id="home-loc-error" className="loc-error" role="alert">
               {locError}
             </span>
           )}
@@ -1230,7 +1234,11 @@ function SearchResults({ params }) {
   return (
     <div>
       <div className="search-header">
-        <div className="search-header-inner">
+        <form
+          className="search-header-inner"
+          role="search"
+          onSubmit={(e) => { e.preventDefault(); applyFilters() }}
+        >
           <label className="sr-only" htmlFor="search-zip">
             Zip code
           </label>
@@ -1245,23 +1253,24 @@ function SearchResults({ params }) {
             value={zip}
             onChange={e => setZip(e.target.value)}
             maxLength={5}
+            aria-describedby={locError ? 'search-loc-error' : undefined}
           />
           <button
             type="button"
             onClick={requestLocation}
             disabled={locLoading}
-            title="Use my location"
             className="btn-loc btn-loc-compact"
+            aria-describedby={locError ? 'search-loc-error' : undefined}
           >
-            <span className="btn-loc-icon">{locLoading ? <span className="btn-loc-spinner" /> : <Icon.location />}</span>
-            <span className="btn-loc-label">Use my location</span>
+            <span className="btn-loc-icon" aria-hidden="true">{locLoading ? <span className="btn-loc-spinner" /> : <Icon.location />}</span>
+            <span className="btn-loc-label">{locLoading ? 'Locating…' : 'Use my location'}</span>
           </button>
           {locError && (
-            <span className="loc-error" role="alert">
+            <span id="search-loc-error" className="loc-error" role="alert">
               {locError}
             </span>
           )}
-          <button className="btn btn-primary" onClick={applyFilters}>Search</button>
+          <button type="submit" className="btn btn-primary">Search</button>
           <button
             type="button"
             className="btn btn-outline btn-filter-toggle"
@@ -1270,9 +1279,9 @@ function SearchResults({ params }) {
             onClick={() => setShowFilters(f => !f)}
           >
             {showFilters ? 'Hide filters' : 'Filters'}
-            {activeFilterCount > 0 && <span className="filter-badge">{activeFilterCount}</span>}
+            {activeFilterCount > 0 && <span className="filter-badge" aria-label={`${activeFilterCount} active`}>{activeFilterCount}</span>}
           </button>
-        </div>
+        </form>
       </div>
 
       <div className="results-layout">
@@ -1369,9 +1378,9 @@ function SearchResults({ params }) {
           {loading ? (
             <div className="state-msg" role="status"><div className="spinner"/><p>Loading activities…</p></div>
           ) : error ? (
-            <div className="state-msg" role="alert" style={{color:'#DC2626'}}>
-              <p><strong>Error:</strong> {error}</p>
-              <p style={{marginTop:'0.5rem',fontSize:'0.85rem'}}>Check that AIRTABLE_PAT is set in your Cloudflare Pages environment variables.</p>
+            <div className="state-msg state-msg-error" role="alert">
+              <p><strong>We couldn't load activities right now.</strong></p>
+              <p style={{marginTop:'0.5rem',fontSize:'0.9rem'}}>Please refresh the page or try again in a few minutes. If the problem continues, <a href="mailto:placeholder@example.com">let us know</a>.</p>
             </div>
           ) : (
             <>
@@ -1425,42 +1434,22 @@ function SearchResults({ params }) {
 }
 
 function ActivityCard({ activity: a }) {
-  const [tip, setTip] = useState(null)
-
-  const handleMouseMove = (e) => {
-    setTip({ x: e.clientX, y: e.clientY })
-  }
-  const handleMouseLeave = () => setTip(null)
-
+  // The whole card is the click target — for screen readers we use a clear
+  // aria-label so they don't have to read every line just to know what
+  // pressing Enter will do.
   const isFreeCost = (() => {
     const label = String(a.costCategory || a.costDisplay || '').trim()
     return label === 'Free'
   })()
-
-  const tooltipNode = tip && typeof document !== 'undefined'
-    ? ReactDOM.createPortal(
-        (
-          <span
-            className="card-tooltip"
-            aria-hidden="true"
-            style={{ left: tip.x, top: tip.y }}
-          >
-            Click for more info
-          </span>
-        ),
-        document.body
-      )
-    : null
+  const ariaLabel = `${a.name}${a.location ? ' at ' + a.location : ''} — view details`
 
   return (
-    <>
-      <button
-        type="button"
-        className="activity-card"
-        onClick={() => navigate(`#/activity/${a.id}`)}
-        onMouseMove={handleMouseMove}
-        onMouseLeave={handleMouseLeave}
-      >
+    <button
+      type="button"
+      className="activity-card"
+      aria-label={ariaLabel}
+      onClick={() => navigate(`#/activity/${a.id}`)}
+    >
       <div className="card-top">
         <div>
           <div className="card-name">{a.name}</div>
@@ -1486,9 +1475,7 @@ function ActivityCard({ activity: a }) {
         {(Array.isArray(a.type) ? a.type.length > 0 : !!a.type) && <span className="badge blue">{Array.isArray(a.type) ? a.type.join(', ') : a.type}</span>}
         {a.dist != null && <span className="badge">{a.dist.toFixed(1)} mi away</span>}
       </div>
-      </button>
-      {tooltipNode}
-    </>
+    </button>
   )
 }
 
@@ -1515,8 +1502,16 @@ function ActivityDetail({ id }) {
     }
   }, [activity])
 
-  if (loading) return <div className="state-msg" role="status" style={{padding:'4rem'}}><div className="spinner"/><p>Loading…</p></div>
-  if (error) return <div className="state-msg" role="alert" style={{padding:'4rem',color:'#DC2626'}}><p>{error}</p><button style={{marginTop:'1rem',color:'var(--primary)',fontWeight:600}} onClick={()=>navigate('#/search')}>← Back to search</button></div>
+  if (loading) return <div className="state-msg" role="status" style={{padding:'4rem'}}><div className="spinner" aria-hidden="true"/><p>Loading activity details…</p></div>
+  if (error) return (
+    <div className="state-msg state-msg-error" role="alert" style={{padding:'4rem'}}>
+      <p><strong>We couldn't load this activity.</strong></p>
+      <p style={{marginTop:'0.5rem',fontSize:'0.9rem'}}>The link may be out of date or the activity is no longer listed.</p>
+      <button className="state-msg-action" onClick={()=>navigate('#/search')}>
+        <Icon.back /> Back to search
+      </button>
+    </div>
+  )
   if (!activity) return null
 
   const a = activity
@@ -1758,18 +1753,54 @@ const DISCLAIMER_KEY = 'mnpc_disclaimer_accepted'
 
 function DisclaimerModal({ onAccept }) {
   const btnRef = useRef(null)
+  const modalRef = useRef(null)
 
   useEffect(() => {
-    // Trap focus on mount
+    // Move focus to the accept button so keyboard users start in the modal
     if (btnRef.current) btnRef.current.focus()
-    // Prevent background scrolling
+    // Prevent background scrolling while the modal is up
+    const prevOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-    return () => { document.body.style.overflow = '' }
-  }, [])
+
+    // Focus trap: keep Tab/Shift+Tab cycling inside the modal.
+    // Esc accepts the disclaimer (the only available action).
+    const handleKey = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        onAccept()
+        return
+      }
+      if (e.key !== 'Tab' || !modalRef.current) return
+      const focusables = modalRef.current.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])'
+      )
+      if (focusables.length === 0) return
+      const first = focusables[0]
+      const last = focusables[focusables.length - 1]
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('keydown', handleKey)
+      document.body.style.overflow = prevOverflow
+    }
+  }, [onAccept])
 
   return (
-    <div className="disclaimer-overlay" role="dialog" aria-modal="true" aria-labelledby="disclaimer-title">
-      <div className="disclaimer-modal">
+    <div
+      className="disclaimer-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="disclaimer-title"
+      aria-describedby="disclaimer-body"
+    >
+      <div ref={modalRef} className="disclaimer-modal">
         <div className="disclaimer-icon" aria-hidden="true">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="10"/>
@@ -1778,7 +1809,7 @@ function DisclaimerModal({ onAccept }) {
           </svg>
         </div>
         <h2 id="disclaimer-title">Important Notice</h2>
-        <div className="disclaimer-body">
+        <div id="disclaimer-body" className="disclaimer-body">
           <p>
             The information on this website, including listings and descriptions of exercise programs
             for persons with Parkinson's disease, is provided by the identified organization and is
@@ -1786,7 +1817,6 @@ function DisclaimerModal({ onAccept }) {
             advice, diagnosis, or treatment. Always seek the advice of your physician or other
             qualified healthcare provider with any questions you may have.
           </p>
-          <br />
           <p>
             This website makes no recommendations or representations about the appropriateness or
             quality of any program listed. Inclusion in the database does not imply competency,
