@@ -55,12 +55,23 @@ footer a,
 button { cursor: pointer; font-family: inherit; border: none; background: none; }
 input { font-family: inherit; }
 
-/* Global focus styles to ensure visible focus for interactive elements */
+/* Global focus styles to ensure visible focus for interactive elements.
+   3px outline + offset for WCAG 1.4.11 non-text contrast. */
 a:focus-visible,
 button:focus-visible,
-input:focus-visible {
-  outline: 2px solid var(--primary);
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 3px solid var(--primary);
   outline-offset: 2px;
+}
+/* Prevent the focus ring from being clipped by overflow on cards */
+.activity-card:focus-visible,
+.cat-card:focus-visible {
+  outline: 3px solid var(--primary);
+  outline-offset: 3px;
+  border-color: var(--primary);
 }
 
 /* Skip link for keyboard users */
@@ -108,17 +119,55 @@ nav {
 .btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 0.4rem;
   padding: 0.6rem 1.25rem;
   border-radius: 8px;
   font-size: 0.9rem;
   font-weight: 600;
+  min-height: 44px;  /* WCAG 2.5.5 touch target — minimum tap area */
   transition: all 0.15s;
 }
 .btn-primary { background: var(--primary); color: var(--white); }
 .btn-primary:hover { background: var(--primary-hover); }
 .btn-outline { border: 1.5px solid var(--border); color: var(--text); background: var(--white); }
 .btn-outline:hover { border-color: var(--primary); color: var(--primary); }
+
+/* Nav anchor styled as a button (semantic <a> for navigation) */
+.nav-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.6rem 1rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  min-height: 44px;
+  border: 1.5px solid var(--border);
+  color: var(--text);
+  background: var(--white);
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
+}
+.nav-cta:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-light);
+}
+/* aria-current="page" visual marker on the active nav item */
+.nav-cta[aria-current="page"],
+.nav-logo[aria-current="page"] {
+  color: var(--primary);
+}
+.nav-cta[aria-current="page"] {
+  border-color: var(--primary);
+  background: var(--primary-light);
+}
+.nav-logo {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0.25rem 0;
+}
 
 /* Home hero */
 .hero {
@@ -512,24 +561,6 @@ nav {
 .badge.badge-cost-free { background: var(--accent-blue-light); border-color: var(--accent-blue-mid); color: var(--accent-blue); }
 .badge.green { background: var(--green-light); border-color: var(--primary-mid); color: var(--green); }
 
-/* Cursor-following tooltip on activity cards */
-.card-tooltip {
-  position: fixed;
-  /* Bottom-right of cursor, slightly softer styling */
-  transform: translate(12px, 16px);
-  background: var(--text);
-  color: var(--white);
-  font-size: 0.75rem;
-  font-weight: 500;
-  opacity: 0.8;
-  padding: 0.3rem 0.65rem;
-  border-radius: 6px;
-  white-space: nowrap;
-  pointer-events: none;
-  z-index: 200;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.18);
-}
-
 /* Results count */
 .results-meta { font-size: 0.9rem; color: var(--muted); margin-bottom: 1rem; }
 .results-meta strong { color: var(--text); }
@@ -791,12 +822,35 @@ nav {
   opacity: 0.95;
 }
 
-/* Empty / loading states */
+/* Empty / loading / error states */
 .state-msg {
   text-align: center;
   padding: 3rem 1rem;
   color: var(--muted);
 }
+.state-msg-error {
+  color: #b91c1c;  /* high-contrast red on white (~7.5:1) — WCAG AA */
+}
+.state-msg-error a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.state-msg-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 1.25rem;
+  padding: 0.65rem 1.25rem;
+  background: var(--primary);
+  color: var(--white);
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  min-height: 44px;
+  text-decoration: none;
+}
+.state-msg-action:hover { background: var(--primary-hover); }
 .spinner {
   width: 36px;
   height: 36px;
@@ -818,10 +872,40 @@ footer {
 }
 footer strong { color: #fcfffa; }
 
-/* Respect reduced motion preference: avoid looping background video when possible */
+/* Respect reduced motion preference: avoid looping background video, hover
+   transforms, keyframe animations, and motion-based interactions. WCAG 2.3.3. */
 @media (prefers-reduced-motion: reduce) {
-  .hero-video {
-    display: none;
+  .hero-video { display: none; }
+
+  /* Kill hover-triggered transforms across the app */
+  .activity-card,
+  .activity-card:hover,
+  .cat-card,
+  .cat-card:hover,
+  .scroll-top,
+  .scroll-top:hover,
+  .btn,
+  .btn:hover,
+  .register-cta,
+  .register-cta:hover,
+  .register-cta-arrow,
+  .register-cta:hover .register-cta-arrow,
+  .register-btn,
+  .register-btn:hover {
+    transform: none !important;
+    transition: none !important;
+  }
+
+  /* Disable keyframe animations */
+  .disclaimer-modal,
+  .spinner,
+  .btn-loc-spinner {
+    animation: none !important;
+  }
+  /* Static "loading" marker (no spin) — keep visible without motion */
+  .spinner {
+    border-color: var(--primary-mid);
+    border-top-color: var(--primary);
   }
 }
 
@@ -884,6 +968,9 @@ footer strong { color: #fcfffa; }
   color: var(--muted);
   text-align: left;
   margin-bottom: 1.75rem;
+}
+.disclaimer-modal .disclaimer-body p + p {
+  margin-top: 0.85rem;
 }
 
 .disclaimer-modal .btn-accept {
