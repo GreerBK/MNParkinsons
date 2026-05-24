@@ -1,9 +1,11 @@
-const FILTER_FIELD_NAMES = {
-  activityType: ['Activity Type', 'Type of Activity'],
-  intensity: ['Level of Intensity', 'Intensity'],
-  cost: ['Cost Category', 'Cost'],
-  format: ['Virtual/In-Person/Hybrid', 'Format'],
-  daysOfWeek: ['Days of Week', 'Day of Week', 'Days of the Week', 'Meeting Days'],
+// Canonical Airtable field names. These match the live schema as of the
+// 2026 cleanup — keep in sync if you rename anything in Airtable.
+const FIELDS = {
+  activityType: 'Activity Type',
+  intensity: 'Intensity',
+  costCategory: 'Cost Category',
+  format: 'Virtual/In-Person/Hybrid',
+  daysOfWeek: 'Days of Week',
 }
 
 const DAY_ORDER = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -35,20 +37,21 @@ export async function onRequestGet({ env }) {
     for (const field of table.fields) {
       if (!['singleSelect', 'multipleSelects'].includes(field.type)) continue
       const choices = getChoicesFromField(field)
-      const name = field.name
-      if (FILTER_FIELD_NAMES.activityType.some(n => n === name)) out.activityType = choices
-      else if (FILTER_FIELD_NAMES.intensity.some(n => n === name)) out.intensity = choices
-      else if (FILTER_FIELD_NAMES.cost.some(n => n === name)) out.cost = choices
-      else if (FILTER_FIELD_NAMES.format.some(n => n === name)) out.format = choices
-      else if (FILTER_FIELD_NAMES.daysOfWeek.some(n => n === name)) {
-        out.daysOfWeek = [...choices].sort((a, b) => {
-          const i = DAY_ORDER.indexOf(a)
-          const j = DAY_ORDER.indexOf(b)
-          if (i === -1 && j === -1) return a.localeCompare(b)
-          if (i === -1) return 1
-          if (j === -1) return -1
-          return i - j
-        })
+      switch (field.name) {
+        case FIELDS.activityType:  out.activityType = choices; break
+        case FIELDS.intensity:     out.intensity = choices; break
+        case FIELDS.costCategory:  out.cost = choices; break
+        case FIELDS.format:        out.format = choices; break
+        case FIELDS.daysOfWeek:
+          out.daysOfWeek = [...choices].sort((a, b) => {
+            const i = DAY_ORDER.indexOf(a)
+            const j = DAY_ORDER.indexOf(b)
+            if (i === -1 && j === -1) return a.localeCompare(b)
+            if (i === -1) return 1
+            if (j === -1) return -1
+            return i - j
+          })
+          break
       }
     }
     return Response.json(out)

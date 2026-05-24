@@ -1,9 +1,11 @@
-const FILTER_FIELD_NAMES = {
-  activityType: ['Activity Type', 'Type of Activity'],
-  intensity: ['Level of Intensity', 'Intensity'],
-  cost: ['Cost Category', 'Cost'],
-  format: ['Virtual/In-Person/Hybrid', 'Format'],
-  daysOfWeek: ['Days of Week', 'Day of Week', 'Days of the Week', 'Meeting Days'],
+// Canonical Airtable field names. These match the live schema as of the
+// 2026 cleanup — keep in sync if you rename anything in Airtable.
+const FIELDS = {
+  activityType: 'Activity Type',
+  intensity: 'Intensity',
+  costCategory: 'Cost Category',
+  format: 'Virtual/In-Person/Hybrid',
+  daysOfWeek: 'Days of Week',
 }
 
 // Airtable formula strings use '' (doubled quote) to escape single quotes, not backslash.
@@ -35,11 +37,11 @@ export async function onRequestGet({ request, env }) {
       `OR(SEARCH('${eq}', {Activity Name}), SEARCH('${eq}', {Location}), SEARCH('${eq}', {Address}))`
     )
   }
-  if (type.length) conditions.push(`OR(${type.map(t => `SEARCH('${esc(t)}', {Activity Type})`).join(',')})`)
-  if (intensity.length) conditions.push(`OR(${intensity.map(i => `SEARCH('${esc(i)}', {Intensity})`).join(',')})`)
-  if (cost.length) conditions.push(`OR(${cost.map(c => `{Cost Category} = '${esc(c)}'`).join(',')})`)
-  if (format.length) conditions.push(`OR(${format.map(f => `{Virtual/In-Person/Hybrid} = '${esc(f)}'`).join(',')})`)
-  if (daysOfWeek.length) conditions.push(`OR(${daysOfWeek.map(d => `SEARCH('${esc(d)}', {Days of Week})`).join(',')})`)
+  if (type.length) conditions.push(`OR(${type.map(t => `SEARCH('${esc(t)}', {${FIELDS.activityType}})`).join(',')})`)
+  if (intensity.length) conditions.push(`OR(${intensity.map(i => `SEARCH('${esc(i)}', {${FIELDS.intensity}})`).join(',')})`)
+  if (cost.length) conditions.push(`OR(${cost.map(c => `{${FIELDS.costCategory}} = '${esc(c)}'`).join(',')})`)
+  if (format.length) conditions.push(`OR(${format.map(f => `{${FIELDS.format}} = '${esc(f)}'`).join(',')})`)
+  if (daysOfWeek.length) conditions.push(`OR(${daysOfWeek.map(d => `SEARCH('${esc(d)}', {${FIELDS.daysOfWeek}})`).join(',')})`)
 
   const formula = conditions.length > 1 ? `AND(${conditions.join(',')})` : conditions[0]
   const airtableBase = `https://api.airtable.com/v0/${baseId}/${tableId}`
