@@ -6,7 +6,7 @@ Activity data is managed through Airtable and the site is hosted on Cloudflare P
 
 ## Airtable Field Reference
 
-The app reads these fields from the `Activities` table (base `appKtPJiD3Pex9ai1`):
+The app reads these fields from the `Activities` table:
 
 | Field | Type | Notes |
 |---|---|---|
