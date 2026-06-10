@@ -41,3 +41,20 @@ The app reads these fields from the `Activities` table:
 ## Geocoding
 
 Latitude/Longitude are filled automatically by the Airtable Automation defined in [`airtable-automation/geocode.js`](airtable-automation/geocode.js). Setup instructions are in the comments at the top of that file. The old local Python script is no longer needed.
+
+## Security & performance
+
+- **No user input ever reaches Airtable formulas.** The API functions fetch Active records with a fixed query and apply search/filters in plain JavaScript, so quotes or symbols in a search can't break or alter the query.
+- **Edge caching.** Responses are cached at Cloudflare's edge for ~5 minutes, so even heavy traffic stays far below Airtable's rate limits. New Airtable edits appear on the site within a few minutes.
+- **Security headers** (Content-Security-Policy, frame blocking, etc.) live in [`public/_headers`](public/_headers).
+- **Fonts are self-hosted** — no third-party requests, nothing shared with Google.
+
+## Local development
+
+```
+npm install
+npm run build
+npx wrangler pages dev dist
+```
+
+Create a `.dev.vars` file (git-ignored) with `AIRTABLE_PAT`, `AIRTABLE_BASE_ID`, and `AIRTABLE_TABLE_ID` so the local API functions can reach Airtable. In production these are set as environment variables in the Cloudflare Pages dashboard.
