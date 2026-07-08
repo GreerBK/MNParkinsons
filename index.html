@@ -4,11 +4,36 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MN Parkinson's Connect</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Serif+Display:ital@0;1&display=swap" rel="stylesheet">
+    <meta
+      name="description"
+      content="Find Parkinson's-friendly exercise classes, support groups, and community activities across Minnesota. Search by location, activity type, cost, and schedule — free to use."
+    />
+    <meta name="theme-color" content="#366e12" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+
+    <!-- Social sharing preview (Open Graph + Twitter) -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="MN Parkinson's Connect" />
+    <meta property="og:title" content="MN Parkinson's Connect — Find Your Community in Minnesota" />
+    <meta
+      property="og:description"
+      content="Connecting people with Parkinson's and their caregivers to local activities, support groups, and resources across Minnesota."
+    />
+    <meta name="twitter:card" content="summary" />
+
+    <!-- Fonts are self-hosted (see src/main.jsx) — no third-party requests. -->
   </head>
   <body>
     <div id="root"></div>
+    <noscript>
+      <div style="max-width: 600px; margin: 4rem auto; padding: 0 1.5rem; font-family: sans-serif; text-align: center">
+        <h1>MN Parkinson's Connect</h1>
+        <p>
+          This site needs JavaScript to search Parkinson's-friendly activities across Minnesota.
+          Please enable JavaScript in your browser settings, then reload the page.
+        </p>
+      </div>
+    </noscript>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

@@ -15,12 +15,30 @@ function getChoicesFromField(field) {
   return field.options.choices.map(c => (typeof c === 'string' ? c : c.name)).filter(Boolean)
 }
 
-export async function onRequestGet({ env }) {
+// Select-field choices change rarely — cache aggressively to keep schema
+// requests away from Airtable's rate limit.
+const CACHE_HEADERS = {
+  'Content-Type': 'application/json',
+  'X-Content-Type-Options': 'nosniff',
+  'Cache-Control': 'public, max-age=300, s-maxage=600',
+}
+
+export async function onRequestGet(context) {
+  const { env, request } = context
   const pat = env.AIRTABLE_PAT
   const baseId = env.AIRTABLE_BASE_ID
   const tableId = env.AIRTABLE_TABLE_ID
 
   if (!pat) return Response.json(null)
+
+  let cache = null
+  try {
+    cache = caches.default
+    const hit = await cache.match(request)
+    if (hit) return hit
+  } catch {
+    cache = null
+  }
 
   try {
     const res = await fetch(
@@ -54,7 +72,13 @@ export async function onRequestGet({ env }) {
           break
       }
     }
-    return Response.json(out)
+    const response = Response.json(out, { headers: CACHE_HEADERS })
+    if (cache) {
+      const put = cache.put(request, response.clone()).catch(() => {})
+      if (context.waitUntil) context.waitUntil(put)
+      else await put
+    }
+    return response
   } catch {
     return Response.json(null)
   }

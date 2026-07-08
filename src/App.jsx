@@ -177,7 +177,27 @@ async function fetchActivities(filters = {}) {
     })
   }
 
+  // Without a location to sort by distance, fall back to a stable A→Z order
+  // instead of whatever order Airtable returns.
+  if (!center) {
+    activities.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+  }
+
   return activities
+}
+
+// The unfiltered catalog backs several screens (home categories, filter
+// options, the activity count). Share one settled promise per session so
+// navigating around doesn't refetch the same payload.
+let catalogPromise = null
+function fetchCatalog() {
+  if (!catalogPromise) {
+    catalogPromise = fetchActivities({}).catch(err => {
+      catalogPromise = null // allow a retry after a failure
+      throw err
+    })
+  }
+  return catalogPromise
 }
 
 async function fetchActivityById(id) {
@@ -688,6 +708,88 @@ const Icon = {
       <circle cx="12" cy="10" r="3" />
     </svg>
   ),
+  pause: () => (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      stroke="none"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <rect x="6" y="4" width="4" height="16" rx="1" />
+      <rect x="14" y="4" width="4" height="16" rx="1" />
+    </svg>
+  ),
+  play: () => (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      stroke="none"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <polygon points="6 3 20 12 6 21 6 3" />
+    </svg>
+  ),
+  share: () => (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <circle cx="18" cy="5" r="3" />
+      <circle cx="6" cy="12" r="3" />
+      <circle cx="18" cy="19" r="3" />
+      <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+      <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+    </svg>
+  ),
+  printer: () => (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <polyline points="6 9 6 2 18 2 18 9" />
+      <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+      <rect x="6" y="14" width="12" height="8" />
+    </svg>
+  ),
+  flag: () => (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z" />
+      <line x1="4" y1="22" x2="4" y2="15" />
+    </svg>
+  ),
 }
 
 // Auto-match category names to emojis via keyword matching
@@ -720,7 +822,10 @@ function ScrollToTop() {
   return (
     <button
       className={`scroll-top ${visible ? 'visible' : ''}`}
-      onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+      onClick={() => window.scrollTo({
+        top: 0,
+        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+      })}
       aria-label="Scroll to top"
       tabIndex={visible ? 0 : -1}
     >
@@ -765,10 +870,71 @@ function Nav() {
 // ─────────────────────────────────────────────
 // HOME PAGE
 // ─────────────────────────────────────────────
+
+// Ambient hero video. Mounting waits for the window 'load' event so the
+// ~8 MB file never competes with fonts, scripts, or activity data — the
+// gradient backdrop shows until then. Skipped entirely for visitors with
+// data-saver enabled (the caller already skips it for reduced motion).
+function HeroVideo() {
+  const [ready, setReady] = useState(() => document.readyState === 'complete')
+  const [paused, setPaused] = useState(false)
+  const videoRef = useRef(null)
+
+  useEffect(() => {
+    if (ready) return
+    const onLoad = () => setReady(true)
+    window.addEventListener('load', onLoad)
+    if (document.readyState === 'complete') setReady(true)
+    return () => window.removeEventListener('load', onLoad)
+  }, [ready])
+
+  if (!ready || navigator.connection?.saveData) return null
+
+  const toggle = () => {
+    const v = videoRef.current
+    if (!v) return
+    if (v.paused) {
+      v.play().catch(() => {})
+      setPaused(false)
+    } else {
+      v.pause()
+      setPaused(true)
+    }
+  }
+
+  return (
+    <>
+      <div className="hero-video" aria-hidden="true">
+        <video
+          ref={videoRef}
+          src="/serene.mp4"
+          autoPlay
+          muted
+          loop
+          playsInline
+          disablePictureInPicture
+          onCanPlay={e => e.currentTarget.classList.add('can-play')}
+        />
+      </div>
+      <div className="hero-overlay" aria-hidden="true" />
+      {/* WCAG 2.2.2 — auto-playing motion needs a visible way to stop it */}
+      <button
+        type="button"
+        className="hero-video-toggle"
+        onClick={toggle}
+        aria-label={paused ? 'Play background video' : 'Pause background video'}
+      >
+        {paused ? <Icon.play /> : <Icon.pause />}
+      </button>
+    </>
+  )
+}
+
 function Home() {
   const [zip, setZip] = useState('')
   const [types, setTypes] = useState([])
   const [typeEmojis, setTypeEmojis] = useState({})
+  const [activityCount, setActivityCount] = useState(null)
   const { coords: userCoords, loading: locLoading, error: locError, requestLocation } = useUserLocation()
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(() =>
     typeof window !== 'undefined' && typeof window.matchMedia === 'function'
@@ -796,7 +962,7 @@ function Home() {
   }, [userCoords])
 
   useEffect(() => {
-    fetchActivities().then(acts => {
+    fetchCatalog().then(acts => {
       const seen = new Set()
       const emojis = {}
       acts.forEach(a => {
@@ -812,6 +978,7 @@ function Home() {
       })
       setTypes([...seen].sort())
       setTypeEmojis(emojis)
+      setActivityCount(acts.length)
     }).catch(() => {})
   }, [])
 
@@ -832,14 +999,7 @@ function Home() {
   return (
     <div>
       <section className="hero">
-        {!prefersReducedMotion && (
-          <>
-            <div className="hero-video" aria-hidden="true">
-              <video src="/serene.mp4" autoPlay muted loop playsInline />
-            </div>
-            <div className="hero-overlay" aria-hidden="true" />
-          </>
-        )}
+        {!prefersReducedMotion && <HeroVideo />}
         <div className="hero-content">
           <div className="hero-eyebrow">Helping you connect with community</div>
           <h1>Find Your <em>Community</em> in Minnesota</h1>
@@ -883,6 +1043,9 @@ function Home() {
 
       <section className="categories container">
         <h2>Browse by Category</h2>
+        {activityCount > 0 && (
+          <p className="categories-sub">{activityCount} {activityCount === 1 ? 'activity' : 'activities'} across Minnesota</p>
+        )}
         {types.length > 0 ? (
           <div className="cat-grid">
             {types.map(type => (
@@ -905,7 +1068,7 @@ function Home() {
 
       <footer>
         <strong>MN Parkinson's Connect</strong> — Helping you connect with community.<br />
-        <span style={{marginTop:'0.5rem',display:'inline-block'}}>Questions? <a href="mailto:placeholder@example.com" style={{color:'#b8ccab'}}>placeholder@example.com</a></span><br />
+        {/* TODO: add a real contact email here when one is set up */}
         <span style={{marginTop:'0.5rem',display:'inline-block',opacity:0.9}}>Powered by <a href="https://technextdoormn.com" target="_blank" rel="noopener noreferrer" style={{color:'#b8ccab'}}>Tech Next Door MN<ExtLink /></a></span>
       </footer>
     </div>
@@ -1019,7 +1182,6 @@ function SearchResults({ params }) {
   const [filterOptions, setFilterOptions] = useState(EMPTY_FILTER_OPTIONS)
   const [showFilters, setShowFilters] = useState(false)
   const { coords: userCoords, loading: locLoading, error: locError, requestLocation } = useUserLocation()
-  const filtersRef = useRef(null)
 
   // filter state (multi-select as arrays)
   const [q, setQ] = useState(params.get('q') || '')
@@ -1080,7 +1242,7 @@ function SearchResults({ params }) {
   // not only values present in the current filtered result set.
   useEffect(() => {
     let cancelled = false
-    fetchActivities({})
+    fetchCatalog()
       .then(acts => {
         if (cancelled) return
         const derived = deriveFilterOptionsFromActivities(acts)
@@ -1177,7 +1339,8 @@ function SearchResults({ params }) {
     }
   }, [maxDistance])
 
-  // Auto-apply when search or zip change (debounced so we don't navigate on every keystroke)
+  // Auto-apply when keyword search or zip change (debounced so we don't navigate on every keystroke).
+  // Scroll containment for the sidebar is handled by `overscroll-behavior` in CSS.
   const didMountSearch = useRef(false)
   const debounceRef = useRef(null)
   useEffect(() => {
@@ -1193,29 +1356,7 @@ function SearchResults({ params }) {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
     }
-  }, [zip])
-
-  // Trap scroll inside filters panel so page doesn't scroll when hovering sidebar
-  useEffect(() => {
-    const el = filtersRef.current
-    if (!el) return
-    const onWheel = (e) => {
-      const { scrollTop, scrollHeight, clientHeight } = el
-      const hasOverflow = scrollHeight > clientHeight
-      if (!hasOverflow) {
-        // No scrollable content — just block page scroll
-        e.preventDefault()
-        return
-      }
-      const atTop = scrollTop <= 0 && e.deltaY < 0
-      const atBottom = scrollTop + clientHeight >= scrollHeight - 1 && e.deltaY > 0
-      if (atTop || atBottom) {
-        e.preventDefault()
-      }
-    }
-    el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel)
-  })
+  }, [zip, q])
 
   const clearFilters = () => {
     setSelType([]); setSelIntensity([]); setSelCost([])
@@ -1250,6 +1391,18 @@ function SearchResults({ params }) {
           role="search"
           onSubmit={(e) => { e.preventDefault(); applyFilters() }}
         >
+          <label className="sr-only" htmlFor="search-q">
+            Search by activity, place, or address
+          </label>
+          <input
+            id="search-q"
+            className="q-input"
+            type="search"
+            placeholder="Search activities (e.g. boxing, yoga)…"
+            value={q}
+            onChange={e => setQ(e.target.value)}
+            autoComplete="off"
+          />
           <label className="sr-only" htmlFor="search-zip">
             Zip code
           </label>
@@ -1299,14 +1452,13 @@ function SearchResults({ params }) {
         {/* Filters sidebar */}
         <aside
           id="filters-panel"
-          ref={filtersRef}
           className={`filters-panel ${showFilters ? 'filters-open' : ''}`}
           aria-label="Activity filters"
         >
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0.5rem'}}>
             <strong style={{fontSize:'0.95rem'}}>Filters</strong>
             {(selType.length > 0 || selIntensity.length > 0 || selCost.length > 0 || selFormat.length > 0 || selDays.length > 0 || (zip && maxDistance != null) || params.get('lat')) && (
-              <button onClick={clearFilters} style={{fontSize:'0.78rem',color:'var(--primary)',fontWeight:600}}>Clear all</button>
+              <button onClick={clearFilters} className="filters-clear">Clear all</button>
             )}
           </div>
 
@@ -1360,7 +1512,8 @@ function SearchResults({ params }) {
                   step={5}
                   value={maxDistance ?? DISTANCE_DEFAULT}
                   onChange={e => setMaxDistance(Number(e.target.value))}
-                  aria-label="Maximum distance in miles"
+                  aria-label="Maximum distance"
+                  aria-valuetext={`${maxDistance ?? DISTANCE_DEFAULT} miles`}
                 />
               </div>
               <div className="distance-ticks">
@@ -1392,12 +1545,17 @@ function SearchResults({ params }) {
           ) : error ? (
             <div className="state-msg state-msg-error" role="alert">
               <p><strong>We couldn't load activities right now.</strong></p>
-              <p style={{marginTop:'0.5rem',fontSize:'0.9rem'}}>Please refresh the page or try again in a few minutes. If the problem continues, <a href="mailto:placeholder@example.com">let us know</a>.</p>
+              <p style={{marginTop:'0.5rem',fontSize:'0.95rem'}}>Please check your internet connection, or try again in a few minutes.</p>
+              <button className="btn btn-primary" style={{marginTop:'1.25rem'}} onClick={load}>
+                Try again
+              </button>
             </div>
           ) : (
             <>
               <h1 id="results-heading" className="results-heading">
-                Activities that match your filters
+                {(activeFilterCount > 0 || params.get('q') || params.get('zip') || params.get('lat'))
+                  ? 'Activities that match your search'
+                  : 'All activities'}
               </h1>
               <div aria-live="polite" aria-atomic="true">
                 <p className="results-meta">
@@ -1428,9 +1586,9 @@ function SearchResults({ params }) {
                   <button className="btn btn-primary" onClick={clearFilters}>Clear all filters</button>
                 </div>
               ) : (
-                <div className="activity-list">
+                <ul className="activity-list" role="list">
                   {activities.map(a => <ActivityCard key={a.id} activity={a} />)}
-                </div>
+                </ul>
               )}
             </>
           )}
@@ -1446,25 +1604,25 @@ function SearchResults({ params }) {
 }
 
 function ActivityCard({ activity: a }) {
-  // The whole card is the click target — for screen readers we use a clear
-  // aria-label so they don't have to read every line just to know what
-  // pressing Enter will do.
+  // The card is a list item with a real link on the activity name. A CSS
+  // "stretched link" (::after covering the card) keeps the whole card
+  // clickable while screen readers still get every detail line — a button
+  // with aria-label would have hidden the schedule, cost, and distance.
   const isFreeCost = (() => {
     const label = String(a.costCategory || a.costDisplay || '').trim()
     return label === 'Free'
   })()
-  const ariaLabel = `${a.name}${a.location ? ' at ' + a.location : ''} — view details`
 
   return (
-    <button
-      type="button"
-      className="activity-card"
-      aria-label={ariaLabel}
-      onClick={() => navigate(`#/activity/${a.id}`)}
-    >
+    <li className="activity-card">
       <div className="card-top">
         <div>
-          <div className="card-name">{a.name}</div>
+          <h2 className="card-name">
+            <a className="card-link" href={`#/activity/${a.id}`}>
+              {a.name}
+              <span className="sr-only"> — view details</span>
+            </a>
+          </h2>
           <div className="card-location">
             {a.format === 'Virtual' ? '🌐 Virtual' : <><Icon.pin /> {a.location || a.address || a.zip}</>}
           </div>
@@ -1487,17 +1645,158 @@ function ActivityCard({ activity: a }) {
         {(Array.isArray(a.type) ? a.type.length > 0 : !!a.type) && <span className="badge blue">{Array.isArray(a.type) ? a.type.join(', ') : a.type}</span>}
         {a.dist != null && <span className="badge">{a.dist.toFixed(1)} mi away</span>}
       </div>
-    </button>
+    </li>
   )
 }
 
 // ─────────────────────────────────────────────
 // ACTIVITY DETAIL PAGE
 // ─────────────────────────────────────────────
+
+// "Report incorrect information" — a quiet disclosure at the bottom of each
+// activity page. Submits to /api/report, which files the note in the Reports
+// table in Airtable, linked to this activity.
+function ReportIssueSection({ activity }) {
+  const [open, setOpen] = useState(false)
+  const [message, setMessage] = useState('')
+  const [email, setEmail] = useState('')
+  const [website, setWebsite] = useState('') // honeypot — humans never see it
+  const [status, setStatus] = useState('idle') // idle | sending | sent | error
+  const [errorMsg, setErrorMsg] = useState('')
+  const textareaRef = useRef(null)
+  const toggleRef = useRef(null)
+  const wasOpen = useRef(false)
+
+  // Move focus into the form when it opens, and back to the toggle on Cancel.
+  useEffect(() => {
+    if (open) {
+      wasOpen.current = true
+      textareaRef.current?.focus()
+    } else if (wasOpen.current) {
+      toggleRef.current?.focus()
+    }
+  }, [open])
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    const msg = message.trim()
+    if (msg.length < 5) {
+      setStatus('error')
+      setErrorMsg("Please tell us a little more about what's wrong — a few words is plenty.")
+      return
+    }
+    setStatus('sending')
+    setErrorMsg('')
+    try {
+      const res = await fetch('/api/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          activityId: activity.id,
+          message: msg,
+          email: email.trim() || undefined,
+          website,
+        }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || '')
+      }
+      setStatus('sent')
+    } catch (err) {
+      setStatus('error')
+      setErrorMsg(err.message || "We couldn't send your report right now. Please try again in a few minutes.")
+    }
+  }
+
+  if (status === 'sent') {
+    return (
+      <section className="report-section" aria-label="Report incorrect information">
+        <p className="report-success" role="status">
+          <span aria-hidden="true">✓ </span>
+          Thank you — we received your note and will review this listing soon.
+        </p>
+      </section>
+    )
+  }
+
+  return (
+    <section className="report-section" aria-label="Report incorrect information">
+      {!open ? (
+        <button type="button" ref={toggleRef} className="report-toggle" onClick={() => setOpen(true)}>
+          <Icon.flag /> See something incorrect or out of date? Let us know.
+        </button>
+      ) : (
+        <form className="report-form" onSubmit={handleSubmit}>
+          <h2 className="report-title">Report incorrect information</h2>
+          <p className="report-desc">
+            Tell us what's wrong with the listing for <strong>{activity.name}</strong> and we'll look into it.
+          </p>
+
+          <label className="report-label" htmlFor="report-message">
+            What's incorrect or out of date?
+          </label>
+          <textarea
+            id="report-message"
+            ref={textareaRef}
+            rows={4}
+            maxLength={2000}
+            required
+            value={message}
+            onChange={e => setMessage(e.target.value)}
+            placeholder={'For example: "This class moved to Tuesdays" or "The phone number doesn\'t work."'}
+          />
+
+          <label className="report-label" htmlFor="report-email">
+            Your email <span className="report-optional">(optional — only if you'd like a reply)</span>
+          </label>
+          <input
+            id="report-email"
+            type="email"
+            maxLength={254}
+            autoComplete="email"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+          />
+
+          {/* Honeypot: off-screen and skipped by keyboard/screen readers.
+              Real visitors never fill it; submissions that do are ignored. */}
+          <div className="report-hp" aria-hidden="true">
+            <label htmlFor="report-website">Website</label>
+            <input
+              id="report-website"
+              type="text"
+              tabIndex={-1}
+              autoComplete="off"
+              value={website}
+              onChange={e => setWebsite(e.target.value)}
+            />
+          </div>
+
+          {status === 'error' && (
+            <p className="report-error" role="alert">{errorMsg}</p>
+          )}
+
+          <div className="report-actions">
+            <button type="submit" className="btn btn-primary" disabled={status === 'sending'}>
+              {status === 'sending' ? 'Sending…' : 'Send report'}
+            </button>
+            <button type="button" className="btn btn-outline" onClick={() => setOpen(false)}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+    </section>
+  )
+}
+
 function ActivityDetail({ id }) {
   const [activity, setActivity] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [copied, setCopied] = useState(false)
+  const copyResetRef = useRef(null)
 
   useEffect(() => {
     setLoading(true)
@@ -1506,6 +1805,10 @@ function ActivityDetail({ id }) {
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
   }, [id])
+
+  useEffect(() => () => {
+    if (copyResetRef.current) clearTimeout(copyResetRef.current)
+  }, [])
 
   // WCAG 2.4.2 — set specific page title once activity name is known
   useEffect(() => {
@@ -1553,6 +1856,24 @@ function ActivityDetail({ id }) {
   const howToAttendText = String(a.howToAttend || '').trim()
   const showHowToAttend = howToAttendText && !/^(n\/a|na|tbd|-|—)$/i.test(howToAttendText)
 
+  // Share the page via the OS share sheet where available, otherwise copy
+  // the link and confirm it ("Link copied!") both visually and to screen
+  // readers via the live region below.
+  const canNativeShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function'
+  const handleShare = async () => {
+    const url = window.location.href
+    if (canNativeShare) {
+      try { await navigator.share({ title: `${a.name} — MN Parkinson's Connect`, url }) } catch {}
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      if (copyResetRef.current) clearTimeout(copyResetRef.current)
+      copyResetRef.current = setTimeout(() => setCopied(false), 2500)
+    } catch {}
+  }
+
   const Row = ({ label, value, preserveNewlines = false }) => value ? (
     <div className="info-row">
       <span className="info-label">{label}</span>
@@ -1565,12 +1886,25 @@ function ActivityDetail({ id }) {
   return (
     <div>
       <div className="detail-wrap">
-        <button className="detail-back" onClick={() => {
-          // Preserve search context — go back if there's history, otherwise fall back to search
-          if (window.history.length > 1) { window.history.back() } else { navigate('#/search') }
-        }}>
-          <Icon.back /> Back to results
-        </button>
+        <div className="detail-topbar">
+          <button className="detail-back" onClick={() => {
+            // Preserve search context — go back if there's history, otherwise fall back to search
+            if (window.history.length > 1) { window.history.back() } else { navigate('#/search') }
+          }}>
+            <Icon.back /> Back to results
+          </button>
+          <div className="detail-actions">
+            <button type="button" className="detail-action-btn" onClick={handleShare}>
+              <Icon.share /> {canNativeShare ? 'Share' : (copied ? 'Link copied!' : 'Copy link')}
+            </button>
+            <button type="button" className="detail-action-btn" onClick={() => window.print()}>
+              <Icon.printer /> Print
+            </button>
+          </div>
+          <span className="sr-only" role="status" aria-live="polite">
+            {copied ? 'Link copied to clipboard' : ''}
+          </span>
+        </div>
 
         <div className="detail-tags">
           {(Array.isArray(a.type) ? a.type.length > 0 : !!a.type) && <span className="badge blue">{Array.isArray(a.type) ? a.type.join(', ') : a.type}</span>}
@@ -1745,6 +2079,8 @@ function ActivityDetail({ id }) {
             </div>
           </aside>
         </div>
+
+        <ReportIssueSection activity={a} />
       </div>
 
       <footer>
