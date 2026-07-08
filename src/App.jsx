@@ -527,12 +527,16 @@ function getDisplayDomain(url) {
   }
 }
 
-// Returns a safe https URL or null. Prevents javascript: and other unsafe schemes.
+// Returns a safe https URL or null. Prevents javascript: and other unsafe
+// schemes, and rejects URLs with embedded credentials: a bare email like
+// "person@example.com" would otherwise parse as user "person" on host
+// "example.com" and produce a link to the wrong place entirely.
 function safeHttpUrl(raw) {
   const s = String(raw || '').trim()
   if (!s) return null
   try {
     const u = new URL(s.startsWith('http') ? s : `https://${s}`)
+    if (u.username || u.password) return null
     return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : null
   } catch {
     return null
@@ -1858,13 +1862,15 @@ function ActivityDetail({ id }) {
     ? safeHttpUrl(websiteRaw)
     : null
   const registrationRaw = String(a.registrationLink || '').trim()
-  const registrationUrl = safeHttpUrl(registrationRaw)
   // Some activities use the Registration Link field to hold an email
-  // ("email me to sign up"). Detect that so we can render a mailto:
-  // button instead of dropping the CTA.
-  const registrationEmail = (!registrationUrl && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(registrationRaw))
-    ? registrationRaw
-    : null
+  // ("email me to sign up"). Check for an email BEFORE trying to parse a
+  // URL — "person@example.com" also parses as a valid https URL with a
+  // username, which used to win and produce a broken "Register now" link.
+  const registrationEmail = (() => {
+    const s = registrationRaw.replace(/^mailto:/i, '').trim()
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) ? s : null
+  })()
+  const registrationUrl = registrationEmail ? null : safeHttpUrl(registrationRaw)
   const directionsUrl = a.address
     ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(a.address)}`
     : null
