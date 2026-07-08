@@ -18,9 +18,7 @@ To find the base and table IDs, open the table in Airtable and read them from th
 
 ## Airtable Field Reference
 
-
 The app reads these fields from the `Activities` table in Airtable:
-=======
 
 | Field | Type | Notes |
 |---|---|---|
