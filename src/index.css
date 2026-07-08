@@ -1276,6 +1276,113 @@ footer strong { color: #fcfffa; }
 }
 
 /* ─────────────────────────────────────────────
+   "Report incorrect information" on activity pages
+   ───────────────────────────────────────────── */
+.report-section {
+  margin-top: 2rem;
+}
+.report-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 0.6rem 0.9rem;
+  min-height: 44px;
+  border: 1.5px dashed var(--border);
+  border-radius: 8px;
+  background: transparent;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.report-toggle:hover {
+  color: var(--primary);
+  border-color: var(--primary);
+  background: var(--primary-light);
+}
+.report-form {
+  background: var(--white);
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  padding: 1.25rem;
+  max-width: 560px;
+}
+.report-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin-bottom: 0.35rem;
+}
+.report-desc {
+  font-size: 0.95rem;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+.report-label {
+  display: block;
+  font-weight: 600;
+  font-size: 0.95rem;
+  margin: 0.85rem 0 0.35rem;
+}
+.report-label .report-optional {
+  font-weight: 400;
+  color: var(--muted);
+}
+.report-form textarea,
+.report-form input[type="email"] {
+  width: 100%;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  font-size: 1rem;
+  font-family: inherit;
+  background: var(--white);
+  box-sizing: border-box;
+}
+.report-form textarea {
+  resize: vertical;
+  min-height: 110px;
+  line-height: 1.5;
+}
+.report-form input[type="email"] {
+  min-height: 44px;
+}
+.report-form textarea:focus,
+.report-form input[type="email"]:focus {
+  border-color: var(--primary);
+}
+.report-error {
+  color: #b91c1c;
+  font-size: 0.95rem;
+  margin-top: 0.75rem;
+}
+.report-success {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  color: var(--primary);
+  font-weight: 600;
+  font-size: 1rem;
+  background: var(--primary-light);
+  border: 1.5px solid var(--primary-mid);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+}
+.report-actions {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  flex-wrap: wrap;
+}
+/* Honeypot field — parked far off-screen; bots fill it, people never see it */
+.report-hp {
+  position: absolute;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
+/* ─────────────────────────────────────────────
    Print — activity pages double as paper handouts
    (schedules get pinned to the fridge), so strip
    the chrome and spell out the important URLs.
@@ -1290,6 +1397,7 @@ footer strong { color: #fcfffa; }
   .hero-video,
   .hero-overlay,
   .hero-video-toggle,
+  .report-section,
   footer {
     display: none !important;
   }

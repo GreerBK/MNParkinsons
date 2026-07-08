@@ -773,6 +773,23 @@ const Icon = {
       <rect x="6" y="14" width="12" height="8" />
     </svg>
   ),
+  flag: () => (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z" />
+      <line x1="4" y1="22" x2="4" y2="15" />
+    </svg>
+  ),
 }
 
 // Auto-match category names to emojis via keyword matching
@@ -1635,6 +1652,145 @@ function ActivityCard({ activity: a }) {
 // ─────────────────────────────────────────────
 // ACTIVITY DETAIL PAGE
 // ─────────────────────────────────────────────
+
+// "Report incorrect information" — a quiet disclosure at the bottom of each
+// activity page. Submits to /api/report, which files the note in the Reports
+// table in Airtable, linked to this activity.
+function ReportIssueSection({ activity }) {
+  const [open, setOpen] = useState(false)
+  const [message, setMessage] = useState('')
+  const [email, setEmail] = useState('')
+  const [website, setWebsite] = useState('') // honeypot — humans never see it
+  const [status, setStatus] = useState('idle') // idle | sending | sent | error
+  const [errorMsg, setErrorMsg] = useState('')
+  const textareaRef = useRef(null)
+  const toggleRef = useRef(null)
+  const wasOpen = useRef(false)
+
+  // Move focus into the form when it opens, and back to the toggle on Cancel.
+  useEffect(() => {
+    if (open) {
+      wasOpen.current = true
+      textareaRef.current?.focus()
+    } else if (wasOpen.current) {
+      toggleRef.current?.focus()
+    }
+  }, [open])
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    const msg = message.trim()
+    if (msg.length < 5) {
+      setStatus('error')
+      setErrorMsg("Please tell us a little more about what's wrong — a few words is plenty.")
+      return
+    }
+    setStatus('sending')
+    setErrorMsg('')
+    try {
+      const res = await fetch('/api/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          activityId: activity.id,
+          message: msg,
+          email: email.trim() || undefined,
+          website,
+        }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || '')
+      }
+      setStatus('sent')
+    } catch (err) {
+      setStatus('error')
+      setErrorMsg(err.message || "We couldn't send your report right now. Please try again in a few minutes.")
+    }
+  }
+
+  if (status === 'sent') {
+    return (
+      <section className="report-section" aria-label="Report incorrect information">
+        <p className="report-success" role="status">
+          <span aria-hidden="true">✓ </span>
+          Thank you — we received your note and will review this listing soon.
+        </p>
+      </section>
+    )
+  }
+
+  return (
+    <section className="report-section" aria-label="Report incorrect information">
+      {!open ? (
+        <button type="button" ref={toggleRef} className="report-toggle" onClick={() => setOpen(true)}>
+          <Icon.flag /> See something incorrect or out of date? Let us know.
+        </button>
+      ) : (
+        <form className="report-form" onSubmit={handleSubmit}>
+          <h2 className="report-title">Report incorrect information</h2>
+          <p className="report-desc">
+            Tell us what's wrong with the listing for <strong>{activity.name}</strong> and we'll look into it.
+          </p>
+
+          <label className="report-label" htmlFor="report-message">
+            What's incorrect or out of date?
+          </label>
+          <textarea
+            id="report-message"
+            ref={textareaRef}
+            rows={4}
+            maxLength={2000}
+            required
+            value={message}
+            onChange={e => setMessage(e.target.value)}
+            placeholder={'For example: "This class moved to Tuesdays" or "The phone number doesn\'t work."'}
+          />
+
+          <label className="report-label" htmlFor="report-email">
+            Your email <span className="report-optional">(optional — only if you'd like a reply)</span>
+          </label>
+          <input
+            id="report-email"
+            type="email"
+            maxLength={254}
+            autoComplete="email"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+          />
+
+          {/* Honeypot: off-screen and skipped by keyboard/screen readers.
+              Real visitors never fill it; submissions that do are ignored. */}
+          <div className="report-hp" aria-hidden="true">
+            <label htmlFor="report-website">Website</label>
+            <input
+              id="report-website"
+              type="text"
+              tabIndex={-1}
+              autoComplete="off"
+              value={website}
+              onChange={e => setWebsite(e.target.value)}
+            />
+          </div>
+
+          {status === 'error' && (
+            <p className="report-error" role="alert">{errorMsg}</p>
+          )}
+
+          <div className="report-actions">
+            <button type="submit" className="btn btn-primary" disabled={status === 'sending'}>
+              {status === 'sending' ? 'Sending…' : 'Send report'}
+            </button>
+            <button type="button" className="btn btn-outline" onClick={() => setOpen(false)}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+    </section>
+  )
+}
+
 function ActivityDetail({ id }) {
   const [activity, setActivity] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -1923,6 +2079,8 @@ function ActivityDetail({ id }) {
             </div>
           </aside>
         </div>
+
+        <ReportIssueSection activity={a} />
       </div>
 
       <footer>
