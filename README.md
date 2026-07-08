@@ -4,9 +4,23 @@ A free activity finder for people with Parkinson's disease and their caregivers 
 
 Activity data is managed through Airtable and the site is hosted on Cloudflare Pages.
 
+## Configuration
+
+The site talks to Airtable through Cloudflare Pages Functions (in `functions/api/`). All credentials and identifiers are stored as **server-side environment variables** in the Cloudflare Pages dashboard (Settings → Environment variables) and are never committed to this repo or bundled into the browser:
+
+| Variable | What it is |
+|---|---|
+| `AIRTABLE_PAT` | Airtable personal access token (the secret — keep private) |
+| `AIRTABLE_BASE_ID` | The Airtable base identifier |
+| `AIRTABLE_TABLE_ID` | The activities table identifier |
+
+To find the base and table IDs, open the table in Airtable and read them from the URL (`airtable.com/<baseId>/<tableId>/...`). See `.env.example` for the variable names to set. Never paste the PAT into client-side code or commit it.
+
 ## Airtable Field Reference
 
-The app reads these fields from the `Activities` table:
+
+The app reads these fields from the `Activities` table in Airtable:
+=======
 
 | Field | Type | Notes |
 |---|---|---|
