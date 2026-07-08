@@ -1294,9 +1294,19 @@ function SearchResults({ params }) {
     const zipValid = normalizeZip(zipTrimmed)
     const qTrimmed = (q && String(q).trim()) || ''
     if (qTrimmed) p.set('q', qTrimmed)
+    // Location precedence: this component's own geolocation, else a lat/lng
+    // that arrived via the URL (e.g. "Use my location" on the home page),
+    // else a typed zip. Without the URL fallback, rebuilding the query here
+    // would silently drop the user's "near me" location.
+    const urlLat = params.get('lat')
+    const urlLng = params.get('lng')
     if (userCoords) {
       p.set('lat', String(userCoords[0]))
       p.set('lng', String(userCoords[1]))
+      p.set('distance', String(maxDistance ?? DISTANCE_DEFAULT))
+    } else if (urlLat && urlLng) {
+      p.set('lat', urlLat)
+      p.set('lng', urlLng)
       p.set('distance', String(maxDistance ?? DISTANCE_DEFAULT))
     } else {
       if (zipValid) p.set('zip', zipValid)
@@ -1307,7 +1317,16 @@ function SearchResults({ params }) {
     if (selCost.length) p.set('cost', selCost.join(','))
     if (selFormat.length) p.set('format', selFormat.join(','))
     if (selDays.length) p.set('days', selDays.join(','))
-    navigate(`#/search?${p.toString()}`)
+    // No-op guard: the URL→state sync effect creates fresh array references,
+    // which trips the auto-apply effects on mount. If rebuilding produces the
+    // current URL, skip navigating so we don't clobber params (and avoid
+    // redundant history entries / reload loops).
+    const next = p.toString()
+    if (next === params.toString()) {
+      if (closePanel) setShowFilters(false)
+      return
+    }
+    navigate(`#/search?${next}`)
     if (closePanel) setShowFilters(false)
   }
 
