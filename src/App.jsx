@@ -221,12 +221,11 @@ async function fetchFilterOptionsFromSchema() {
 
 // Derive filter options from activity records (fallback when schema API not available)
 function deriveFilterOptionsFromActivities(activities) {
-  const DAY_ORDER = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
   const out = { activityType: [], intensity: [], cost: [], format: [], daysOfWeek: [] }
   const typeSet = new Set(), intensitySet = new Set(), costSet = new Set(), formatSet = new Set(), daysSet = new Set()
   activities.forEach(a => {
     if (a.type) (Array.isArray(a.type) ? a.type : [a.type]).forEach(t => t && typeSet.add(String(t).trim()))
-    // Split multi-select values so we only show atomic options (Light, Moderate, Heavy), not "Light, Moderate, Heavy"
+    // Split multi-select values so we only show atomic options (Light, Moderate, High), not "Light, Moderate, High"
     if (a.intensity) String(a.intensity).split(/[,;]/).map(s => s.trim()).filter(Boolean).forEach(v => intensitySet.add(v))
     if (a.costCategory) costSet.add(String(a.costCategory).trim())
     if (a.format) formatSet.add(String(a.format).trim())
@@ -235,12 +234,7 @@ function deriveFilterOptionsFromActivities(activities) {
   out.activityType = [...typeSet].sort()
   out.intensity = [...intensitySet].sort()
   out.cost = [...costSet].sort()
-  out.daysOfWeek = [...daysSet].sort((a, b) => {
-    const i = DAY_ORDER.indexOf(a); const j = DAY_ORDER.indexOf(b)
-    if (i === -1 && j === -1) return a.localeCompare(b)
-    if (i === -1) return 1; if (j === -1) return -1
-    return i - j
-  })
+  out.daysOfWeek = [...daysSet].sort(compareByOrder(WEEKDAY_ORDER))
   out.format = [...formatSet].sort()
   return out
 }
@@ -980,7 +974,7 @@ function Home() {
           if (a.emoji && !emojis[name]) emojis[name] = a.emoji
         })
       })
-      setTypes([...seen].sort())
+      setTypes(withoutHidden([...seen], HIDDEN_ACTIVITY_TYPES).sort())
       setTypeEmojis(emojis)
       setActivityCount(acts.length)
     }).catch(() => {})
@@ -1096,29 +1090,55 @@ const EMPTY_FILTER_OPTIONS = { activityType: [], intensity: [], cost: [], format
 
 // Default options so sidebar always shows full lists even when initial results are filtered (e.g. from home page by activity type)
 const DEFAULT_FILTER_OPTIONS = {
-  activityType: ['Boxing', 'Yoga', 'Support Group', 'Exercise'],
-  intensity: ['Light', 'Moderate', 'Heavy'],
+  activityType: ['Boxing', 'Yoga', 'Support Group'],
+  intensity: ['High', 'Moderate', 'Light'],
   cost: ['Free', 'Fee', 'Free Trial'],
   format: ['In-Person', 'Virtual'],
   daysOfWeek: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
 }
 const WEEKDAY_ORDER = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
-function unionSortedStrings(...lists) {
-  const merged = [...new Set(lists.flat().filter(Boolean).map(s => String(s).trim()).filter(Boolean))]
-  return merged.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+function unionValues(...lists) {
+  return [...new Set(lists.flat().filter(Boolean).map(s => String(s).trim()).filter(Boolean))]
 }
 
-function unionDaysOfWeek(...lists) {
-  const merged = [...new Set(lists.flat().filter(Boolean).map(s => String(s).trim()).filter(Boolean))]
-  return merged.sort((a, b) => {
-    const i = WEEKDAY_ORDER.indexOf(a)
-    const j = WEEKDAY_ORDER.indexOf(b)
+function unionSortedStrings(...lists) {
+  return unionValues(...lists).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+}
+
+// Comparator: items in `order` first (by position, case-insensitive), unknown values after, alphabetical
+function compareByOrder(order) {
+  return (a, b) => {
+    const i = order.findIndex(x => x.toLowerCase() === a.toLowerCase())
+    const j = order.findIndex(x => x.toLowerCase() === b.toLowerCase())
     if (i === -1 && j === -1) return a.localeCompare(b)
     if (i === -1) return 1
     if (j === -1) return -1
     return i - j
-  })
+  }
+}
+
+// Options excluded everywhere (sidebar, home grid, URL params) by site-owner request,
+// so they stay gone even if the values reappear in Airtable data or on old bookmarked links.
+const HIDDEN_ACTIVITY_TYPES = new Set(['exercise'])
+const HIDDEN_INTENSITIES = new Set(['heavy'])
+const INTENSITY_ORDER = ['High', 'Moderate', 'Light']
+
+function withoutHidden(list, hidden) {
+  return list.filter(o => !hidden.has(String(o).toLowerCase()))
+}
+
+function unionActivityTypes(...lists) {
+  return withoutHidden(unionSortedStrings(...lists), HIDDEN_ACTIVITY_TYPES)
+}
+
+// Intensity shows in fixed effort order (High → Moderate → Light), unknown values last
+function unionIntensities(...lists) {
+  return withoutHidden(unionValues(...lists), HIDDEN_INTENSITIES).sort(compareByOrder(INTENSITY_ORDER))
+}
+
+function unionDaysOfWeek(...lists) {
+  return unionValues(...lists).sort(compareByOrder(WEEKDAY_ORDER))
 }
 
 function toggleMulti(arr, item) {
@@ -1190,8 +1210,10 @@ function SearchResults({ params }) {
   // filter state (multi-select as arrays)
   const [q, setQ] = useState(params.get('q') || '')
   const [zip, setZip] = useState((params.get('zip') || '').trim())
-  const [selType, setSelType] = useState(paramToArray(params.get('type')))
-  const [selIntensity, setSelIntensity] = useState(paramToArray(params.get('intensity')))
+  // Hidden values are scrubbed so stale bookmarked URLs (?type=Exercise, ?intensity=Heavy)
+  // can't apply a filter the sidebar no longer offers a checkbox for
+  const [selType, setSelType] = useState(withoutHidden(paramToArray(params.get('type')), HIDDEN_ACTIVITY_TYPES))
+  const [selIntensity, setSelIntensity] = useState(withoutHidden(paramToArray(params.get('intensity')), HIDDEN_INTENSITIES))
   const [selCost, setSelCost] = useState(paramToArray(params.get('cost')))
   const [selFormat, setSelFormat] = useState(paramToArray(params.get('format')))
   const [selDays, setSelDays] = useState(paramToArray(params.get('days')))
@@ -1225,8 +1247,8 @@ function SearchResults({ params }) {
         q: params.get('q') || undefined,
         zip: zipParam,
         coords: coords || undefined,
-        type: typeParam ? paramToArray(typeParam) : undefined,
-        intensity: intensityParam ? paramToArray(intensityParam) : undefined,
+        type: typeParam ? withoutHidden(paramToArray(typeParam), HIDDEN_ACTIVITY_TYPES) : undefined,
+        intensity: intensityParam ? withoutHidden(paramToArray(intensityParam), HIDDEN_INTENSITIES) : undefined,
         cost: costParam ? paramToArray(costParam) : undefined,
         format: formatParam ? paramToArray(formatParam) : undefined,
         daysOfWeek: daysParam ? paramToArray(daysParam) : undefined,
@@ -1251,8 +1273,8 @@ function SearchResults({ params }) {
         if (cancelled) return
         const derived = deriveFilterOptionsFromActivities(acts)
         setFilterOptions(prev => ({
-          activityType: unionSortedStrings(derived.activityType, prev.activityType, DEFAULT_FILTER_OPTIONS.activityType),
-          intensity: unionSortedStrings(derived.intensity, prev.intensity, DEFAULT_FILTER_OPTIONS.intensity),
+          activityType: unionActivityTypes(derived.activityType, prev.activityType, DEFAULT_FILTER_OPTIONS.activityType),
+          intensity: unionIntensities(derived.intensity, prev.intensity, DEFAULT_FILTER_OPTIONS.intensity),
           cost: unionSortedStrings(derived.cost, prev.cost, DEFAULT_FILTER_OPTIONS.cost),
           format: unionSortedStrings(derived.format, prev.format, DEFAULT_FILTER_OPTIONS.format),
           daysOfWeek: unionDaysOfWeek(derived.daysOfWeek, prev.daysOfWeek, DEFAULT_FILTER_OPTIONS.daysOfWeek),
@@ -1268,8 +1290,8 @@ function SearchResults({ params }) {
     fetchFilterOptionsFromSchema().then(opts => {
       if (!opts) return
       setFilterOptions(prev => ({
-        activityType: unionSortedStrings(opts.activityType, prev.activityType),
-        intensity: unionSortedStrings(opts.intensity, prev.intensity),
+        activityType: unionActivityTypes(opts.activityType, prev.activityType),
+        intensity: unionIntensities(opts.intensity, prev.intensity),
         cost: unionSortedStrings(opts.cost, prev.cost),
         format: unionSortedStrings(opts.format, prev.format),
         daysOfWeek: unionDaysOfWeek(opts.daysOfWeek, prev.daysOfWeek),
@@ -1281,8 +1303,8 @@ function SearchResults({ params }) {
   useEffect(() => {
     setQ(params.get('q') || '')
     setZip((params.get('zip') || '').trim())
-    setSelType(paramToArray(params.get('type')))
-    setSelIntensity(paramToArray(params.get('intensity')))
+    setSelType(withoutHidden(paramToArray(params.get('type')), HIDDEN_ACTIVITY_TYPES))
+    setSelIntensity(withoutHidden(paramToArray(params.get('intensity')), HIDDEN_INTENSITIES))
     setSelCost(paramToArray(params.get('cost')))
     setSelFormat(paramToArray(params.get('format')))
     setSelDays(paramToArray(params.get('days')))
@@ -1485,8 +1507,8 @@ function SearchResults({ params }) {
             )}
           </div>
 
-          <FilterGroupMulti title="Activity Type" options={unionSortedStrings(filterOptions.activityType, DEFAULT_FILTER_OPTIONS.activityType)} value={selType} onChange={setSelType} initialVisible={6} />
-          <FilterGroupMulti title="Intensity" options={unionSortedStrings(filterOptions.intensity, DEFAULT_FILTER_OPTIONS.intensity)} value={selIntensity} onChange={setSelIntensity} initialVisible={5} />
+          <FilterGroupMulti title="Activity Type" options={unionActivityTypes(filterOptions.activityType, DEFAULT_FILTER_OPTIONS.activityType)} value={selType} onChange={setSelType} initialVisible={6} />
+          <FilterGroupMulti title="Intensity" options={unionIntensities(filterOptions.intensity, DEFAULT_FILTER_OPTIONS.intensity)} value={selIntensity} onChange={setSelIntensity} initialVisible={5} />
           <FilterGroupMulti title="Cost" options={unionSortedStrings(filterOptions.cost, DEFAULT_FILTER_OPTIONS.cost)} value={selCost} onChange={setSelCost} initialVisible={5} />
           <FilterGroupMulti title="Format" options={unionSortedStrings(filterOptions.format, DEFAULT_FILTER_OPTIONS.format)} value={selFormat} onChange={setSelFormat} initialVisible={5} />
           <FilterGroupMulti title="Days of week" options={unionDaysOfWeek(filterOptions.daysOfWeek, DEFAULT_FILTER_OPTIONS.daysOfWeek)} value={selDays} onChange={setSelDays} initialVisible={7} />
