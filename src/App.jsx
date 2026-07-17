@@ -95,7 +95,10 @@ function mapRecord(record) {
     zip:              String(f['Activity Zip Code'] || ''),
     format:           f['Virtual/In-Person/Hybrid'] || 'In-Person',
     schedule:         String(f['Schedule'] || '').trim(),
-    daysOfWeek:       Array.isArray(daysRaw) ? daysRaw.join(', ') : (daysRaw ? String(daysRaw).trim() : ''),
+    // Always display days Monday→Sunday regardless of the chip order stored in Airtable
+    daysOfWeek:       (Array.isArray(daysRaw) ? daysRaw : String(daysRaw || '').split(/[,;]/))
+                        .map(d => String(d).trim()).filter(Boolean)
+                        .sort(compareByOrder(WEEKDAY_ORDER)).join(', '),
     timeOfDay:        f['Time of Day']            || '',
     intensity:        Array.isArray(intensityRaw) ? intensityRaw.join(', ') : (intensityRaw ? String(intensityRaw).trim() : ''),
     costDisplay:      f['Cost']                   || '',
@@ -462,15 +465,16 @@ function parseSchedule(raw) {
   const text = String(raw || '').trim()
   if (!text) return null
   // Bail on non-weekly patterns ("1st and 3rd Tuesdays every month",
-  // "2nd Friday of the month", "every other Wednesday", "biweekly").
+  // "Third Thursday of odd months", "2nd Friday of the month",
+  // "every other Wednesday", "biweekly").
   // The day-grid view assumes a weekly recurrence — for monthly or
   // alternating schedules we let the caller fall back to showing the
   // raw text intact, which preserves the full intent.
   if (
     /\b(1st|2nd|3rd|4th|5th)\b/i.test(text) ||
-    /\b(biweekly|bi-weekly|monthly)\b/i.test(text) ||
-    /\bevery other\b/i.test(text) ||
-    /\bof the month\b/i.test(text)
+    /\b(first|second|third|fourth|fifth|last)\b/i.test(text) ||
+    /\b(biweekly|bi-weekly|month(s|ly)?)\b/i.test(text) ||
+    /\bevery other\b/i.test(text)
   ) return null
   const dayRe = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tues|thurs|thur|mon|tue|wed|thu|fri|sat|sun)s?\b/gi
   const matches = []
