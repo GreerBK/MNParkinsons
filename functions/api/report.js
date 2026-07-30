@@ -90,7 +90,12 @@ export async function onRequestPost({ request, env }) {
       `https://api.airtable.com/v0/${baseId}/${activitiesTableId}/${activityId}`,
       { headers: { Authorization: `Bearer ${readPat}` } }
     )
-    if (!res.ok) return reply({ error: 'Activity not found.' }, 404)
+    // Only a definitive "no such record" means the activity doesn't exist;
+    // anything else (rate limit, outage) shouldn't reject a genuine report.
+    if (res.status === 404 || res.status === 403) return reply({ error: 'Activity not found.' }, 404)
+    if (!res.ok) {
+      return reply({ error: 'Could not reach the activity database. Please try again shortly.' }, 502)
+    }
     const record = await res.json()
     if (record?.fields?.['Status'] !== 'Active') return reply({ error: 'Activity not found.' }, 404)
     activityName = String(record?.fields?.['Activity Name'] || 'Unknown activity')

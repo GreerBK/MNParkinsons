@@ -65,6 +65,15 @@ Setup this feature needs (one time):
 
 Spam protection: a hidden honeypot field, strict length limits, and the endpoint verifies the reported activity actually exists and is Active before saving anything.
 
+## Traffic logging
+
+Two complementary views of site traffic:
+
+- **Page views** — Cloudflare Web Analytics (enabled in the Cloudflare dashboard) tracks visits, top pages, referrers, and countries. Cookieless, so no consent banner is needed.
+- **API requests** — the middleware in [`functions/api/_middleware.js`](functions/api/_middleware.js) writes one row per `/api/*` request to the **API Log** table in Airtable: endpoint, search/filter terms, response status, coarse location, and a "Likely bot" flag. It reuses `AIRTABLE_WRITE_PAT`, so no extra setup is needed.
+
+Log rows are deleted automatically after 7 days (the middleware prunes as it goes — no cron job). To keep more or less history, change `RETENTION_DAYS` at the top of the middleware — but note log rows count against the Airtable base's record limit, so keep retention short on the free plan. Logging is designed to always lose gracefully: rows are batched (up to 10 per Airtable call) and paced so they can't compete with the real API for Airtable's per-base rate limit, any rate-limit response pauses logging for a minute, and if Airtable is slow or the token is missing the site is unaffected and rows are simply dropped. No IP addresses and no request bodies are ever logged.
+
 ## Security & performance
 
 - **No user input ever reaches Airtable formulas.** The API functions fetch Active records with a fixed query and apply search/filters in plain JavaScript, so quotes or symbols in a search can't break or alter the query.
