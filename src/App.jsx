@@ -1792,7 +1792,7 @@ function ReportIssueSection({ activity }) {
     <section className="report-section" aria-label="Report incorrect information">
       {!open ? (
         <button type="button" ref={toggleRef} className="report-toggle" onClick={() => setOpen(true)}>
-          <Icon.flag /> See something incorrect or out of date? Let us know.
+          <Icon.flag /> See something missing, incorrect or out of date? Let us know.
         </button>
       ) : (
         <form className="report-form" onSubmit={handleSubmit}>
