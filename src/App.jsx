@@ -2912,7 +2912,7 @@ export default function App() {
   // dismissed so users land in the content, not at document.body.
   useEffect(() => {
     if (disclaimerAccepted && mainRef.current) {
-      mainRef.current.focus()
+      mainRef.current.focus({ preventScroll: true })
     }
   }, [hash, disclaimerAccepted])
 
