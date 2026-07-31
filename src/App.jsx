@@ -2166,7 +2166,7 @@ function ActivityDetail({ id }) {
 // review table in Airtable. Nothing is published until it's approved there.
 
 const EMPTY_SUBMIT_FORM = {
-  name: '', types: [], otherType: '', description: '', additionalDetails: '',
+  name: '', types: [], otherChecked: false, otherType: '', description: '', additionalDetails: '',
   intensity: [], format: '', location: '', address: '', zip: '',
   days: [], schedule: '', startDate: '', endDate: '',
   costCategory: '', cost: '', website: '', registrationLink: '',
@@ -2187,6 +2187,7 @@ const SUBMIT_COST_CATEGORIES = ['Free', 'Paid', 'Free Trial', 'Fee']
 const SUBMIT_FIELD_IDS = {
   name: 'submit-name',
   types: 'submit-types',
+  otherType: 'submit-other-type',
   description: 'submit-description',
   format: 'submit-format',
   address: 'submit-address',
@@ -2313,8 +2314,10 @@ function SubmitActivity() {
     if (form.name.trim().length < 2) {
       errs.name = 'Give the activity a name.'
     }
-    if (form.types.length === 0 && !form.otherType.trim()) {
-      errs.types = 'Pick at least one activity type, or describe it in the "Something else" box.'
+    if (form.types.length === 0 && !form.otherChecked) {
+      errs.types = 'Pick at least one activity type.'
+    } else if (form.otherChecked && !form.otherType.trim()) {
+      errs.otherType = 'Tell us what kind of activity "Other" is (or uncheck it).'
     }
     if (form.description.trim().length < 10) {
       errs.description = 'Describe the activity in a sentence or two.'
@@ -2368,7 +2371,7 @@ function SubmitActivity() {
           body: JSON.stringify({
             name: form.name.trim(),
             activityTypes: form.types,
-            suggestedType: orUndef(form.otherType),
+            suggestedType: form.otherChecked ? orUndef(form.otherType) : undefined,
             description: form.description.trim(),
             additionalDetails: orUndef(form.additionalDetails),
             intensity: form.intensity,
@@ -2483,26 +2486,59 @@ function SubmitActivity() {
                   placeholder='e.g. "Rock Steady Boxing — Woodbury"'
                 />
 
-                <SubmitCheckGroup
-                  idBase="submit-types"
-                  legend="Activity type"
-                  required
-                  hint="Check all that apply."
-                  error={errors.types}
-                  options={typeOptions}
-                  value={form.types}
-                  onChange={set('types')}
-                />
-
-                <SubmitTextField
-                  id="submit-other-type"
-                  label="Something else?"
-                  hint="If the activity doesn't fit the types above, describe it in a few words."
-                  value={form.otherType}
-                  onChange={set('otherType')}
-                  type="text"
-                  maxLength={120}
-                />
+                <fieldset
+                  className="submit-group"
+                  aria-describedby={['submit-types-hint', errors.types ? 'submit-types-error' : null].filter(Boolean).join(' ')}
+                >
+                  <legend className="submit-label">
+                    Activity type
+                    <span className="submit-req" aria-hidden="true"> *</span>
+                    <span className="sr-only"> (required)</span>
+                  </legend>
+                  <p id="submit-types-hint" className="submit-hint">Check all that apply.</p>
+                  <div className="submit-check-grid">
+                    {typeOptions.map((opt, i) => (
+                      <label key={opt} className="submit-check">
+                        <input
+                          type="checkbox"
+                          id={i === 0 ? 'submit-types' : undefined}
+                          checked={form.types.includes(opt)}
+                          onChange={() => set('types')(toggleMulti(form.types, opt))}
+                        />
+                        <span>{opt}</span>
+                      </label>
+                    ))}
+                    <label className="submit-check">
+                      <input
+                        type="checkbox"
+                        checked={form.otherChecked}
+                        onChange={() => set('otherChecked')(!form.otherChecked)}
+                      />
+                      <span>Other</span>
+                    </label>
+                  </div>
+                  {form.otherChecked && (
+                    <div className="submit-other">
+                      <label className="submit-label" htmlFor="submit-other-type">What kind of activity?</label>
+                      <input
+                        id="submit-other-type"
+                        type="text"
+                        maxLength={120}
+                        value={form.otherType}
+                        onChange={e => set('otherType')(e.target.value)}
+                        aria-invalid={errors.otherType ? true : undefined}
+                        aria-describedby={errors.otherType ? 'submit-other-type-error' : undefined}
+                        placeholder='e.g. "Water aerobics"'
+                      />
+                      {errors.otherType && (
+                        <p id="submit-other-type-error" className="submit-field-error" role="alert">{errors.otherType}</p>
+                      )}
+                    </div>
+                  )}
+                  {errors.types && (
+                    <p id="submit-types-error" className="submit-field-error" role="alert">{errors.types}</p>
+                  )}
+                </fieldset>
 
                 <SubmitTextField
                   id="submit-description"
