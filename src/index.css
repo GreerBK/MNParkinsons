@@ -1503,6 +1503,12 @@ footer .footer-line a { color: #b8ccab; }
   accent-color: var(--primary);
 }
 
+/* "Other" activity type — text box revealed under the grid when checked */
+.submit-other {
+  margin-top: 0.35rem;
+  max-width: 420px;
+}
+
 .submit-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
