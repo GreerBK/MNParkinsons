@@ -846,6 +846,7 @@ function Nav() {
   const { path } = parseHash(hash)
   const onHome = path === '/' || path === ''
   const onSearch = path === '/search'
+  const onSubmit = path === '/submit'
   return (
     <nav aria-label="Main site navigation">
       <div className="nav-inner">
@@ -857,15 +858,40 @@ function Nav() {
         >
           MN <span>Parkinson's Connect</span>
         </a>
-        <a
-          href="#/search"
-          className="btn btn-outline nav-cta"
-          aria-current={onSearch ? 'page' : undefined}
-        >
-          Find activities near you
-        </a>
+        <div className="nav-links">
+          <a
+            href="#/submit"
+            className="btn btn-outline nav-cta"
+            aria-current={onSubmit ? 'page' : undefined}
+          >
+            Submit an activity
+          </a>
+          <a
+            href="#/search"
+            className="btn btn-outline nav-cta"
+            aria-current={onSearch ? 'page' : undefined}
+          >
+            Find activities near you
+          </a>
+        </div>
       </div>
     </nav>
+  )
+}
+
+// Shared footer — one copy for every page.
+function SiteFooter() {
+  return (
+    <footer>
+      <strong>MN Parkinson's Connect</strong> — Helping you connect with community.<br />
+      {/* TODO: add a real contact email here when one is set up */}
+      <span className="footer-line">
+        Know of an activity we're missing? <a href="#/submit">Submit an activity</a>.
+      </span>
+      <span className="footer-line">
+        Powered by <a href="https://technextdoormn.com" target="_blank" rel="noopener noreferrer">Tech Next Door MN<ExtLink /></a>
+      </span>
+    </footer>
   )
 }
 
@@ -1068,11 +1094,7 @@ function Home() {
         )}
       </section>
 
-      <footer>
-        <strong>MN Parkinson's Connect</strong> — Helping you connect with community.<br />
-        {/* TODO: add a real contact email here when one is set up */}
-        <span style={{marginTop:'0.5rem',display:'inline-block',opacity:0.9}}>Powered by <a href="https://technextdoormn.com" target="_blank" rel="noopener noreferrer" style={{color:'#b8ccab'}}>Tech Next Door MN<ExtLink /></a></span>
-      </footer>
+      <SiteFooter />
     </div>
   )
 }
@@ -1644,10 +1666,7 @@ function SearchResults({ params }) {
         </section>
       </div>
 
-      <footer>
-        <strong>MN Parkinson's Connect</strong> — Helping you connect with community.<br />
-        <span style={{marginTop:'0.5rem',display:'inline-block',opacity:0.9}}>Powered by <a href="https://technextdoormn.com" target="_blank" rel="noopener noreferrer" style={{color:'#b8ccab'}}>Tech Next Door MN<ExtLink /></a></span>
-      </footer>
+      <SiteFooter />
     </div>
   )
 }
@@ -1773,7 +1792,7 @@ function ReportIssueSection({ activity }) {
     <section className="report-section" aria-label="Report incorrect information">
       {!open ? (
         <button type="button" ref={toggleRef} className="report-toggle" onClick={() => setOpen(true)}>
-          <Icon.flag /> See something incorrect or out of date? Let us know.
+          <Icon.flag /> See something missing, incorrect or out of date? Let us know.
         </button>
       ) : (
         <form className="report-form" onSubmit={handleSubmit}>
@@ -2134,10 +2153,614 @@ function ActivityDetail({ id }) {
         <ReportIssueSection activity={a} />
       </div>
 
-      <footer>
-        <strong>MN Parkinson's Connect</strong> — Helping you connect with community.<br />
-        <span style={{marginTop:'0.5rem',display:'inline-block',opacity:0.9}}>Powered by <a href="https://technextdoormn.com" target="_blank" rel="noopener noreferrer" style={{color:'#b8ccab'}}>Tech Next Door MN<ExtLink /></a></span>
-      </footer>
+      <SiteFooter />
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────
+// SUBMIT ACTIVITY PAGE
+// ─────────────────────────────────────────────
+
+// Submits to /api/submit, which files the suggestion in the Submissions
+// review table in Airtable. Nothing is published until it's approved there.
+
+const EMPTY_SUBMIT_FORM = {
+  name: '', types: [], otherType: '', description: '', additionalDetails: '',
+  intensity: [], format: '', location: '', address: '', zip: '',
+  days: [], schedule: '', startDate: '', endDate: '',
+  costCategory: '', cost: '', website: '', registrationLink: '',
+  contact: '', programEmail: '', phone: '',
+  submitterName: '', submitterEmail: '',
+}
+
+const SUBMIT_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+// The server validates these against the same fixed lists (functions/api/submit.js).
+// The form offers exactly what the endpoint accepts — schema-driven choices that
+// the server would reject must not appear here.
+const SUBMIT_FORMATS = ['In-Person', 'Virtual']
+const SUBMIT_INTENSITIES = ['High', 'Moderate', 'Light']
+const SUBMIT_COST_CATEGORIES = ['Free', 'Paid', 'Free Trial', 'Fee']
+
+// Where the error-summary links send focus, per validated field.
+const SUBMIT_FIELD_IDS = {
+  name: 'submit-name',
+  types: 'submit-types',
+  description: 'submit-description',
+  format: 'submit-format',
+  address: 'submit-address',
+  zip: 'submit-zip',
+  endDate: 'submit-end-date',
+  programEmail: 'submit-program-email',
+  submitterEmail: 'submit-your-email',
+}
+
+// Label + hint + error wiring for a single input or textarea.
+function SubmitTextField({ id, label, required, hint, error, textarea, value, onChange, ...inputProps }) {
+  const hintId = hint ? `${id}-hint` : null
+  const errId = error ? `${id}-error` : null
+  const Tag = textarea ? 'textarea' : 'input'
+  return (
+    <div className="submit-field">
+      <label className="submit-label" htmlFor={id}>
+        {label}{required && <span className="submit-req" aria-hidden="true"> *</span>}
+      </label>
+      {hint && <p id={hintId} className="submit-hint">{hint}</p>}
+      <Tag
+        id={id}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        required={required || undefined}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={[hintId, errId].filter(Boolean).join(' ') || undefined}
+        {...inputProps}
+      />
+      {error && <p id={errId} className="submit-field-error" role="alert">{error}</p>}
+    </div>
+  )
+}
+
+// Checkbox or radio group. The first input carries `idBase` so the error
+// summary can send focus into the group.
+function SubmitCheckGroup({ idBase, legend, required, hint, error, options, value, onChange, type = 'checkbox' }) {
+  const hintId = hint ? `${idBase}-hint` : null
+  const errId = error ? `${idBase}-error` : null
+  return (
+    <fieldset
+      className="submit-group"
+      aria-describedby={[hintId, errId].filter(Boolean).join(' ') || undefined}
+    >
+      <legend className="submit-label">
+        {legend}
+        {required && <span className="submit-req" aria-hidden="true"> *</span>}
+        {required && <span className="sr-only"> (required)</span>}
+      </legend>
+      {hint && <p id={hintId} className="submit-hint">{hint}</p>}
+      <div className="submit-check-grid">
+        {options.map((opt, i) => (
+          <label key={opt} className="submit-check">
+            <input
+              type={type}
+              id={i === 0 ? idBase : undefined}
+              name={type === 'radio' ? idBase : undefined}
+              checked={type === 'radio' ? value === opt : value.includes(opt)}
+              onChange={() => onChange(type === 'radio' ? opt : toggleMulti(value, opt))}
+            />
+            <span>{opt}</span>
+          </label>
+        ))}
+      </div>
+      {error && <p id={errId} className="submit-field-error" role="alert">{error}</p>}
+    </fieldset>
+  )
+}
+
+function SubmitActivity() {
+  const [form, setForm] = useState(EMPTY_SUBMIT_FORM)
+  const [fax, setFax] = useState('') // honeypot — humans never see it
+  const [status, setStatus] = useState('idle') // idle | sending | sent | error
+  const [serverError, setServerError] = useState('')
+  const [errors, setErrors] = useState({})
+  const [typeOptions, setTypeOptions] = useState(DEFAULT_FILTER_OPTIONS.activityType)
+  const summaryRef = useRef(null)
+  const successRef = useRef(null)
+  const restartedRef = useRef(false)
+
+  const set = key => value => setForm(f => ({ ...f, [key]: value }))
+
+  // Activity Type is the one open-ended list (the server accepts new values
+  // via typecast). It comes from the same two sources as the search sidebar:
+  // the activity catalog plus the Airtable schema when the API can read it.
+  // Hidden legacy values stay excluded.
+  useEffect(() => {
+    let cancelled = false
+    fetchCatalog()
+      .then(acts => {
+        if (cancelled) return
+        const derived = deriveFilterOptionsFromActivities(acts)
+        setTypeOptions(prev => unionActivityTypes(derived.activityType, prev))
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    fetchFilterOptionsFromSchema().then(opts => {
+      if (!opts) return
+      setTypeOptions(prev => unionActivityTypes(opts.activityType, prev))
+    })
+  }, [])
+
+  // After a failed submit, send focus to the error summary so keyboard and
+  // screen-reader users hear what needs fixing.
+  useEffect(() => {
+    if (Object.keys(errors).length > 0) summaryRef.current?.focus()
+  }, [errors])
+
+  useEffect(() => {
+    if (status === 'sent') successRef.current?.focus()
+    // "Submit another activity" unmounts the success panel (and the button
+    // holding focus) — land keyboard users in the fresh form, not on <body>.
+    if (status === 'idle' && restartedRef.current) {
+      restartedRef.current = false
+      document.getElementById('submit-name')?.focus()
+    }
+  }, [status])
+
+  const validate = () => {
+    const errs = {}
+    if (form.name.trim().length < 2) {
+      errs.name = 'Give the activity a name.'
+    }
+    if (form.types.length === 0 && !form.otherType.trim()) {
+      errs.types = 'Pick at least one activity type, or describe it in the "Something else" box.'
+    }
+    if (form.description.trim().length < 10) {
+      errs.description = 'Describe the activity in a sentence or two.'
+    }
+    if (!form.format) {
+      errs.format = 'Choose whether the activity is in-person or virtual.'
+    }
+    // Address and zip only exist (and only matter) for in-person activities —
+    // never flag values in fields the user can no longer see.
+    if (form.format === 'In-Person') {
+      const zipTrimmed = form.zip.trim()
+      if (zipTrimmed && !/^\d{5}$/.test(zipTrimmed)) {
+        errs.zip = 'Zip codes are 5 digits.'
+      }
+      if (!form.address.trim() && !normalizeZip(zipTrimmed)) {
+        errs.address = 'Add an address or zip code so people can find the activity.'
+      }
+    }
+    if (form.startDate && form.endDate && form.endDate < form.startDate) {
+      errs.endDate = 'The end date is before the start date.'
+    }
+    if (form.programEmail.trim() && !SUBMIT_EMAIL_RE.test(form.programEmail.trim())) {
+      errs.programEmail = 'The program email address does not look right.'
+    }
+    if (form.submitterEmail.trim() && !SUBMIT_EMAIL_RE.test(form.submitterEmail.trim())) {
+      errs.submitterEmail = 'Your email address does not look right.'
+    }
+    return errs
+  }
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    const errs = validate()
+    setErrors(errs)
+    if (Object.keys(errs).length > 0) {
+      // Don't leave a previous server error on screen next to the new summary.
+      setStatus('idle')
+      setServerError('')
+      return
+    }
+    setStatus('sending')
+    setServerError('')
+    const orUndef = s => { const t = String(s).trim(); return t || undefined }
+    const isVirtual = form.format === 'Virtual'
+    try {
+      let res
+      try {
+        res = await fetch('/api/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: form.name.trim(),
+            activityTypes: form.types,
+            suggestedType: orUndef(form.otherType),
+            description: form.description.trim(),
+            additionalDetails: orUndef(form.additionalDetails),
+            intensity: form.intensity,
+            format: form.format,
+            location: orUndef(form.location),
+            // A leftover address/zip typed before switching to Virtual would
+            // wrongly pin a virtual activity to a physical place — drop them.
+            address: isVirtual ? undefined : orUndef(form.address),
+            zip: isVirtual ? undefined : orUndef(form.zip),
+            daysOfWeek: form.days,
+            schedule: orUndef(form.schedule),
+            startDate: form.startDate || undefined,
+            endDate: form.endDate || undefined,
+            costCategory: form.costCategory || undefined,
+            cost: orUndef(form.cost),
+            website: orUndef(form.website),
+            registrationLink: orUndef(form.registrationLink),
+            contact: orUndef(form.contact),
+            programEmail: orUndef(form.programEmail),
+            phone: orUndef(form.phone),
+            submitterName: orUndef(form.submitterName),
+            submitterEmail: orUndef(form.submitterEmail),
+            fax,
+          }),
+        })
+      } catch {
+        // Network failure — browsers throw internal strings ("Failed to
+        // fetch") that shouldn't reach visitors; use the friendly fallback.
+        throw new Error('')
+      }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || '')
+      }
+      setStatus('sent')
+    } catch (err) {
+      setStatus('error')
+      setServerError(err.message || "We couldn't send your submission right now. Please check your internet connection and try again in a few minutes.")
+    }
+  }
+
+  const startOver = () => {
+    setForm(EMPTY_SUBMIT_FORM)
+    setFax('')
+    setErrors({})
+    setServerError('')
+    restartedRef.current = true
+    setStatus('idle')
+  }
+
+  const errorList = Object.entries(errors)
+  const showPlaceFields = form.format !== 'Virtual'
+
+  return (
+    <div>
+      <div className="submit-page">
+        <h1 className="submit-title">Submit an Activity</h1>
+
+        {status === 'sent' ? (
+          <div className="submit-success" role="status" ref={successRef} tabIndex={-1}>
+            <p className="submit-success-lead"><span aria-hidden="true">✓ </span>Thank you — we received your suggestion!</p>
+            <p>
+              We review every submission before it appears on the site.
+              {form.submitterEmail.trim() ? ' If we have questions, we may reach out to the email you shared.' : ''}
+            </p>
+            <div className="submit-actions">
+              <button type="button" className="btn btn-primary" onClick={startOver}>Submit another activity</button>
+              <a className="btn btn-outline" href="#/search">Browse activities</a>
+            </div>
+          </div>
+        ) : (
+          <>
+            <p className="submit-intro">
+              Know of a Parkinson's-friendly class, support group, or program in Minnesota
+              that isn't listed here? Tell us about it below. We review every suggestion
+              before it's published. Fields marked with <span className="submit-req">*</span> are
+              required — share whatever else you know, and we'll fill in the gaps.
+            </p>
+
+            <form className="submit-form" onSubmit={handleSubmit} noValidate>
+              {errorList.length > 0 && (
+                <div ref={summaryRef} tabIndex={-1} className="submit-error-summary" role="alert">
+                  <p><strong>Please fix the following before sending:</strong></p>
+                  <ul>
+                    {errorList.map(([key, msg]) => (
+                      <li key={key}>
+                        <button
+                          type="button"
+                          className="submit-error-link"
+                          onClick={() => document.getElementById(SUBMIT_FIELD_IDS[key])?.focus()}
+                        >
+                          {msg}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <fieldset className="submit-section">
+                <legend>About the activity</legend>
+
+                <SubmitTextField
+                  id="submit-name"
+                  label="Activity name"
+                  required
+                  error={errors.name}
+                  value={form.name}
+                  onChange={set('name')}
+                  type="text"
+                  maxLength={200}
+                  placeholder='e.g. "Rock Steady Boxing — Woodbury"'
+                />
+
+                <SubmitCheckGroup
+                  idBase="submit-types"
+                  legend="Activity type"
+                  required
+                  hint="Check all that apply."
+                  error={errors.types}
+                  options={typeOptions}
+                  value={form.types}
+                  onChange={set('types')}
+                />
+
+                <SubmitTextField
+                  id="submit-other-type"
+                  label="Something else?"
+                  hint="If the activity doesn't fit the types above, describe it in a few words."
+                  value={form.otherType}
+                  onChange={set('otherType')}
+                  type="text"
+                  maxLength={120}
+                />
+
+                <SubmitTextField
+                  id="submit-description"
+                  label="Description"
+                  required
+                  hint="What happens at this activity? Who is it for? A sentence or two is plenty."
+                  error={errors.description}
+                  value={form.description}
+                  onChange={set('description')}
+                  textarea
+                  rows={4}
+                  maxLength={5000}
+                />
+
+                <SubmitCheckGroup
+                  idBase="submit-intensity"
+                  legend="Intensity"
+                  hint="How physically demanding is it? Check all that apply."
+                  options={SUBMIT_INTENSITIES}
+                  value={form.intensity}
+                  onChange={set('intensity')}
+                />
+              </fieldset>
+
+              <fieldset className="submit-section">
+                <legend>Location</legend>
+
+                <SubmitCheckGroup
+                  idBase="submit-format"
+                  legend="How do people attend?"
+                  required
+                  error={errors.format}
+                  options={SUBMIT_FORMATS}
+                  value={form.format}
+                  onChange={set('format')}
+                  type="radio"
+                />
+
+                <SubmitTextField
+                  id="submit-location"
+                  label="Venue or organization name"
+                  value={form.location}
+                  onChange={set('location')}
+                  type="text"
+                  maxLength={200}
+                  placeholder='e.g. "YMCA Woodbury"'
+                />
+
+                {showPlaceFields && (
+                  <>
+                    <SubmitTextField
+                      id="submit-address"
+                      label="Street address"
+                      error={errors.address}
+                      value={form.address}
+                      onChange={set('address')}
+                      textarea
+                      rows={2}
+                      maxLength={500}
+                      autoComplete="off"
+                    />
+                    <SubmitTextField
+                      id="submit-zip"
+                      label="Zip code"
+                      error={errors.zip}
+                      value={form.zip}
+                      onChange={set('zip')}
+                      type="text"
+                      inputMode="numeric"
+                      pattern="\d*"
+                      maxLength={5}
+                      autoComplete="off"
+                    />
+                  </>
+                )}
+              </fieldset>
+
+              <fieldset className="submit-section">
+                <legend>Schedule</legend>
+
+                <SubmitCheckGroup
+                  idBase="submit-days"
+                  legend="Days of the week"
+                  hint="Check the days it usually meets, if you know them."
+                  options={WEEKDAY_ORDER}
+                  value={form.days}
+                  onChange={set('days')}
+                />
+
+                <SubmitTextField
+                  id="submit-schedule"
+                  label="Meeting times"
+                  hint='e.g. "Tuesdays 10–11 AM" or "1st and 3rd Thursdays, 6:30 PM"'
+                  value={form.schedule}
+                  onChange={set('schedule')}
+                  type="text"
+                  maxLength={1000}
+                />
+
+                <div className="submit-row">
+                  <SubmitTextField
+                    id="submit-start-date"
+                    label="Start date"
+                    hint="Only for programs that run for a limited time."
+                    value={form.startDate}
+                    onChange={set('startDate')}
+                    type="date"
+                  />
+                  <SubmitTextField
+                    id="submit-end-date"
+                    label="End date"
+                    error={errors.endDate}
+                    value={form.endDate}
+                    onChange={set('endDate')}
+                    type="date"
+                  />
+                </div>
+              </fieldset>
+
+              <fieldset className="submit-section">
+                <legend>Cost &amp; sign-up</legend>
+
+                <div className="submit-field">
+                  <label className="submit-label" htmlFor="submit-cost-category">Cost category</label>
+                  <select
+                    id="submit-cost-category"
+                    className="submit-select"
+                    value={form.costCategory}
+                    onChange={e => set('costCategory')(e.target.value)}
+                  >
+                    <option value="">Not sure</option>
+                    {SUBMIT_COST_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+
+                <SubmitTextField
+                  id="submit-cost"
+                  label="Cost details"
+                  hint='e.g. "$10 per class, first class free" or "Free for members"'
+                  value={form.cost}
+                  onChange={set('cost')}
+                  type="text"
+                  maxLength={500}
+                />
+
+                <SubmitTextField
+                  id="submit-website"
+                  label="Website"
+                  value={form.website}
+                  onChange={set('website')}
+                  type="url"
+                  maxLength={500}
+                  placeholder="https://…"
+                  autoComplete="off"
+                />
+
+                <SubmitTextField
+                  id="submit-registration"
+                  label="Registration link"
+                  hint="The link (or email address) people use to sign up, if different from the website."
+                  value={form.registrationLink}
+                  onChange={set('registrationLink')}
+                  type="text"
+                  maxLength={500}
+                  autoComplete="off"
+                />
+              </fieldset>
+
+              <fieldset className="submit-section">
+                <legend>Activity contact</legend>
+                <p className="submit-section-hint">Who runs the activity? This appears on the public listing so people can get in touch.</p>
+
+                <SubmitTextField
+                  id="submit-contact"
+                  label="Contact name"
+                  value={form.contact}
+                  onChange={set('contact')}
+                  type="text"
+                  maxLength={200}
+                  autoComplete="off"
+                />
+                <SubmitTextField
+                  id="submit-program-email"
+                  label="Contact email"
+                  error={errors.programEmail}
+                  value={form.programEmail}
+                  onChange={set('programEmail')}
+                  type="email"
+                  maxLength={254}
+                  autoComplete="off"
+                />
+                <SubmitTextField
+                  id="submit-phone"
+                  label="Contact phone"
+                  value={form.phone}
+                  onChange={set('phone')}
+                  type="tel"
+                  maxLength={100}
+                  autoComplete="off"
+                />
+              </fieldset>
+
+              <fieldset className="submit-section">
+                <legend>About you <span className="submit-optional">(optional)</span></legend>
+                <p className="submit-section-hint">
+                  Only so we can reach you if we have questions — never published on the site.
+                </p>
+
+                <SubmitTextField
+                  id="submit-your-name"
+                  label="Your name"
+                  value={form.submitterName}
+                  onChange={set('submitterName')}
+                  type="text"
+                  maxLength={100}
+                  autoComplete="name"
+                />
+                <SubmitTextField
+                  id="submit-your-email"
+                  label="Your email"
+                  error={errors.submitterEmail}
+                  value={form.submitterEmail}
+                  onChange={set('submitterEmail')}
+                  type="email"
+                  maxLength={254}
+                  autoComplete="email"
+                />
+              </fieldset>
+
+              {/* Honeypot: off-screen and skipped by keyboard/screen readers.
+                  Real visitors never fill it; submissions that do are ignored. */}
+              <div className="report-hp" aria-hidden="true">
+                <label htmlFor="submit-fax">Fax</label>
+                <input
+                  id="submit-fax"
+                  type="text"
+                  tabIndex={-1}
+                  autoComplete="off"
+                  value={fax}
+                  onChange={e => setFax(e.target.value)}
+                />
+              </div>
+
+              {status === 'error' && (
+                <p className="report-error" role="alert">{serverError}</p>
+              )}
+
+              <div className="submit-actions">
+                <button type="submit" className="btn btn-primary" disabled={status === 'sending'}>
+                  {status === 'sending' ? 'Sending…' : 'Send for review'}
+                </button>
+              </div>
+            </form>
+          </>
+        )}
+      </div>
+
+      <SiteFooter />
     </div>
   )
 }
@@ -2262,6 +2885,8 @@ export default function App() {
     const base = 'MN Parkinson\'s Connect'
     if (path === '/search') {
       document.title = `Search Activities — ${base}`
+    } else if (path === '/submit') {
+      document.title = `Submit an Activity — ${base}`
     } else if (path.startsWith('/activity/')) {
       document.title = `Activity Details — ${base}`
     } else {
@@ -2278,6 +2903,8 @@ export default function App() {
     page = <Home />
   } else if (path === '/search') {
     page = <SearchResults params={params} />
+  } else if (path === '/submit') {
+    page = <SubmitActivity />
   } else if (path.startsWith('/activity/')) {
     const id = path.replace('/activity/', '')
     page = <ActivityDetail id={id} />
