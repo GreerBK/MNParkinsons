@@ -2165,8 +2165,11 @@ function ActivityDetail({ id }) {
 // Submits to /api/submit, which files the suggestion in the Submissions
 // review table in Airtable. Nothing is published until it's approved there.
 
+// Sentinel for the "Other" radio — never sent to Airtable as a type.
+const OTHER_TYPE_VALUE = '__other__'
+
 const EMPTY_SUBMIT_FORM = {
-  name: '', types: [], otherChecked: false, otherType: '', description: '', additionalDetails: '',
+  name: '', type: '', otherType: '', description: '', additionalDetails: '',
   intensity: [], format: '', location: '', address: '', zip: '',
   days: [], schedule: '', startDate: '', endDate: '',
   costCategory: '', cost: '', website: '', registrationLink: '',
@@ -2314,10 +2317,10 @@ function SubmitActivity() {
     if (form.name.trim().length < 2) {
       errs.name = 'Give the activity a name.'
     }
-    if (form.types.length === 0 && !form.otherChecked) {
-      errs.types = 'Pick at least one activity type.'
-    } else if (form.otherChecked && !form.otherType.trim()) {
-      errs.otherType = 'Tell us what kind of activity "Other" is (or uncheck it).'
+    if (!form.type) {
+      errs.types = 'Pick an activity type.'
+    } else if (form.type === OTHER_TYPE_VALUE && !form.otherType.trim()) {
+      errs.otherType = 'Tell us what kind of activity it is.'
     }
     if (form.description.trim().length < 10) {
       errs.description = 'Describe the activity in a sentence or two.'
@@ -2370,8 +2373,8 @@ function SubmitActivity() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             name: form.name.trim(),
-            activityTypes: form.types,
-            suggestedType: form.otherChecked ? orUndef(form.otherType) : undefined,
+            activityTypes: form.type && form.type !== OTHER_TYPE_VALUE ? [form.type] : [],
+            suggestedType: form.type === OTHER_TYPE_VALUE ? orUndef(form.otherType) : undefined,
             description: form.description.trim(),
             additionalDetails: orUndef(form.additionalDetails),
             intensity: form.intensity,
@@ -2495,29 +2498,31 @@ function SubmitActivity() {
                     <span className="submit-req" aria-hidden="true"> *</span>
                     <span className="sr-only"> (required)</span>
                   </legend>
-                  <p id="submit-types-hint" className="submit-hint">Check all that apply.</p>
+                  <p id="submit-types-hint" className="submit-hint">Pick the best fit.</p>
                   <div className="submit-check-grid">
                     {typeOptions.map((opt, i) => (
                       <label key={opt} className="submit-check">
                         <input
-                          type="checkbox"
+                          type="radio"
+                          name="submit-type"
                           id={i === 0 ? 'submit-types' : undefined}
-                          checked={form.types.includes(opt)}
-                          onChange={() => set('types')(toggleMulti(form.types, opt))}
+                          checked={form.type === opt}
+                          onChange={() => set('type')(opt)}
                         />
                         <span>{opt}</span>
                       </label>
                     ))}
                     <label className="submit-check">
                       <input
-                        type="checkbox"
-                        checked={form.otherChecked}
-                        onChange={() => set('otherChecked')(!form.otherChecked)}
+                        type="radio"
+                        name="submit-type"
+                        checked={form.type === OTHER_TYPE_VALUE}
+                        onChange={() => set('type')(OTHER_TYPE_VALUE)}
                       />
                       <span>Other</span>
                     </label>
                   </div>
-                  {form.otherChecked && (
+                  {form.type === OTHER_TYPE_VALUE && (
                     <div className="submit-other">
                       <label className="submit-label" htmlFor="submit-other-type">What kind of activity?</label>
                       <input

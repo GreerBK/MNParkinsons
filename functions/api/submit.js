@@ -173,7 +173,7 @@ export async function onRequestPost(context) {
   const types = cleanList(body.activityTypes, 10, 120)
   const suggestedType = clean(body.suggestedType).slice(0, 120)
   if (types.length === 0 && !suggestedType) {
-    return reply({ error: 'Please pick at least one activity type (or check "Other" and describe it).' }, 400)
+    return reply({ error: 'Please choose an activity type (or pick "Other" and describe it).' }, 400)
   }
 
   const description = clean(body.description)
