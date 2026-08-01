@@ -2094,7 +2094,12 @@ function ActivityDetail({ id }) {
               <h2 className="sidebar-card-title">Cost</h2>
               <div className="cost-display">
                 {a.costCategory === 'Free' ? (
-                  <span className="cost-free">Free</span>
+                  <>
+                    <span className="cost-free">Free</span>
+                    {a.costDisplay && String(a.costDisplay).trim() !== 'Free' && (
+                      <span className="cost-detail">{a.costDisplay}</span>
+                    )}
+                  </>
                 ) : (
                   <>
                     {a.costDisplay && a.costCategory && String(a.costCategory).trim() !== String(a.costDisplay).trim() && (
