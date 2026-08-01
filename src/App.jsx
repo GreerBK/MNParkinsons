@@ -1907,15 +1907,27 @@ function ActivityDetail({ id }) {
     ? safeHttpUrl(websiteRaw)
     : null
   const registrationRaw = String(a.registrationLink || '').trim()
+  const emailOrNull = raw => {
+    const s = String(raw || '').trim().replace(/^mailto:/i, '').replace(/^<+|>+$/g, '').trim()
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) ? s : null
+  }
   // Some activities use the Registration Link field to hold an email
   // ("email me to sign up"). Check for an email BEFORE trying to parse a
   // URL — "person@example.com" also parses as a valid https URL with a
   // username, which used to win and produce a broken "Register now" link.
-  const registrationEmail = (() => {
-    const s = registrationRaw.replace(/^mailto:/i, '').trim()
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) ? s : null
-  })()
+  const registrationEmail = emailOrNull(registrationRaw)
   const registrationUrl = registrationEmail ? null : safeHttpUrl(registrationRaw)
+  // No registration link at all? Fall back to the Program Email Address so
+  // the sidebar still offers a clear way to sign up — several activities
+  // only say "email to register" inside their free-text details. Cells may
+  // list several co-organizers ("a@x.com; b@y.com"); mailto accepts a
+  // comma-separated list, so the button emails all of them.
+  const signupEmails = registrationEmail
+    ? [registrationEmail]
+    : registrationUrl
+      ? []
+      : String(a.email || '').split(/[,;\s]+/).map(emailOrNull).filter(Boolean)
+  const signupEmail = signupEmails.join(',')
   const directionsUrl = a.address
     ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(a.address)}`
     : null
@@ -2089,7 +2101,7 @@ function ActivityDetail({ id }) {
           </div>
 
           {/* Right sidebar — cost & primary actions */}
-          <aside aria-label={registrationUrl ? 'Cost and registration' : 'Cost'}>
+          <aside aria-label={registrationUrl || signupEmails.length > 0 ? 'Cost and registration' : 'Cost'}>
             <div className="sidebar-card cost-register-card">
               <h2 className="sidebar-card-title">Cost</h2>
               <div className="cost-display">
@@ -2123,20 +2135,24 @@ function ActivityDetail({ id }) {
                   <ExtLink />
                 </a>
               )}
-              {!registrationUrl && registrationEmail && (
+              {!registrationUrl && signupEmails.length > 0 && (
                 <a
-                  href={`mailto:${registrationEmail}?subject=${encodeURIComponent('Sign-up: ' + a.name)}`}
+                  href={`mailto:${signupEmail}?subject=${encodeURIComponent('Sign-up: ' + a.name)}`}
                   className="register-cta"
-                  aria-label={`Email ${registrationEmail} to register for ${a.name}`}
+                  aria-label={
+                    signupEmails.length > 1
+                      ? `Email the organizers to register for ${a.name}`
+                      : `Email the organizer to register for ${a.name} (${signupEmail})`
+                  }
                 >
                   <Icon.mail />
-                  <span>Email to register</span>
+                  <span>Email the organizer{signupEmails.length > 1 ? 's' : ''} to register</span>
                 </a>
               )}
 
               {websiteUrl && (
                 <p className="more-info">
-                  {registrationUrl ? 'More info: ' : 'Learn more: '}
+                  {registrationUrl || signupEmails.length > 0 ? 'More info: ' : 'Learn more: '}
                   <a href={websiteUrl} target="_blank" rel="noopener noreferrer">
                     {getDisplayDomain(websiteUrl)}<ExtLink />
                   </a>
