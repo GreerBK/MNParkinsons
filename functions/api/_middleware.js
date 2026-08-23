@@ -60,6 +60,7 @@ const F = {
   verifiedBot: 'Verified bot',
   activity: 'Activity', // link to the viewed activity → powers per-activity view counts
   filtersUsed: 'Filters used', // one multi-select chip per applied finder filter
+  visitor: 'Visitor', // anonymous daily-rotating hash → unique-visitor counts
 }
 
 // Finder filter params (as sent to /api/activities) → chip label prefixes.
@@ -123,11 +124,20 @@ function logRequest(context, status, durationMs) {
       return
     }
 
-    buffer.push(buildFields(request, status, durationMs))
-
-    const flusher = flushSoon(env)
-    if (typeof context.waitUntil === 'function') context.waitUntil(flusher)
-    else flusher.catch(() => {})
+    const fields = buildFields(request, status, durationMs)
+    // The visitor hash needs WebCrypto (async); finish the row, then buffer.
+    const task = visitorHash(env, request)
+      .then((hash) => {
+        if (hash) fields[F.visitor] = hash
+        if (buffer.length >= BUFFER_MAX) {
+          droppedCount++
+          return
+        }
+        buffer.push(fields)
+        return flushSoon(env)
+      })
+    if (typeof context.waitUntil === 'function') context.waitUntil(task)
+    else task.catch(() => {})
   } catch {
     // Logging must never affect the response.
   }
@@ -193,6 +203,35 @@ function buildFields(request, status, durationMs) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+// Anonymous visitor code, in the style of privacy-first analytics tools:
+// HMAC(secret, ip | user-agent | UTC day), truncated. One-way (the address
+// can't be recovered), keyed with a server secret (outsiders can't test
+// guesses), and rotating daily (codes can't link a visitor across days).
+// The raw IP is read here and never stored anywhere.
+async function visitorHash(env, request) {
+  try {
+    const ip = request.headers.get('CF-Connecting-IP') || ''
+    if (!ip) return ''
+    const day = new Date().toISOString().slice(0, 10)
+    const message = `${ip}|${request.headers.get('user-agent') || ''}|${day}`
+    const encoder = new TextEncoder()
+    const key = await crypto.subtle.importKey(
+      'raw',
+      encoder.encode(env.AIRTABLE_WRITE_PAT), // already-secret server value
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    )
+    const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(message))
+    return [...new Uint8Array(sig)]
+      .slice(0, 6)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('')
+  } catch {
+    return '' // no hash is always acceptable — the row just has no Visitor
+  }
+}
 
 // Wait for the burst to pool, then flush whenever the pacing rules allow.
 // Bounded loop so we stay well inside waitUntil's grace period; rows we
