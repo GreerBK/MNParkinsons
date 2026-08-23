@@ -82,6 +82,17 @@ Log rows are deleted automatically after 7 days (the middleware prunes as it goe
 - **The log admits its own gaps.** If rows ever had to be dropped (traffic flood, Airtable rate limit or outage), the next successful write includes a `LOG GAP · about N requests not recorded` row — filter `Method = GAP` to find them. A quiet log with no GAP rows really was a quiet site.
 - **Bot columns:** `Verified bot` is Cloudflare's cryptographic identification of known crawlers (Googlebot etc.) and can't be faked; `Likely bot` adds a looser user-agent guess. A scraper pretending to be Chrome can evade `Likely bot`, so treat it as a floor, not an exact count.
 - **Group by the `Day` column** to see traffic per day in Central time.
+## "Submit an Activity"
+
+Visitors can suggest a new activity at `#/submit` (linked from the nav and the footer). Submissions go to `/api/submit`, which files them in the **Submissions** table with `Status = New`. Nothing appears on the site until it's approved.
+
+Review workflow, all inside Airtable:
+
+1. Open the **Submissions** table and look at rows with `Status = New`. Edit anything that needs cleanup. If **Suggested Activity Type** is filled and you want to adopt it, first add it as an Activity Type option in *both* Submissions and Activities, then tag the row with it.
+2. Set `Status = Approved`. The **"Publish approved submission"** automation copies the row into Activities as an Active activity (the Geocode automation then fills Latitude/Longitude) and flips the submission to `Added`.
+3. Or set `Status = Rejected` to decline. **Submitter Name/Email** are only for follow-up questions and are never copied to Activities.
+
+The endpoint reuses the `AIRTABLE_WRITE_PAT` variable set up for reporting (above). Spam protection: a hidden honeypot field, strict length limits and allow-lists, and best-effort per-IP rate limiting at the edge.
 
 ## Security & performance
 

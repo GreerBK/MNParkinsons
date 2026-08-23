@@ -3,7 +3,7 @@
 //
 // Requires AIRTABLE_WRITE_PAT (scopes: data.records:write on this base) in
 // the Cloudflare Pages environment. The main AIRTABLE_PAT stays read-only;
-// this endpoint is the only code that ever writes to Airtable.
+// only this endpoint and /api/submit ever write to Airtable.
 
 const REPORTS_TABLE_ID = 'tbltRoB20Pk8PJcFy' // "Reports" table (not secret)
 
