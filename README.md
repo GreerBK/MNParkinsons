@@ -65,6 +65,23 @@ Setup this feature needs (one time):
 
 Spam protection: a hidden honeypot field, strict length limits, and the endpoint verifies the reported activity actually exists and is Active before saving anything.
 
+## Traffic logging
+
+Two complementary views of site traffic:
+
+- **Page views** — Cloudflare Web Analytics (enabled in the Cloudflare dashboard) tracks visits, top pages, referrers, and countries. Cookieless, so no consent banner is needed.
+- **API requests** — the middleware in [`functions/api/_middleware.js`](functions/api/_middleware.js) writes one row per `/api/*` request to the **API Log** table in Airtable: endpoint, search/filter terms, response status, coarse location, and a "Likely bot" flag. It reuses `AIRTABLE_WRITE_PAT`, so no extra setup is needed.
+- **Per-activity view counts** — when a person opens an activity page, the log row links to that activity, and the Activities table's **Views (last 7 days)** column counts those links. Sort Activities by that column to see what's popular. Bots and failed requests are excluded; the count is a rolling 7-day window (it moves with the log's retention).
+
+Log rows are deleted automatically after 7 days (the middleware prunes as it goes — no cron job). To keep more or less history, change `RETENTION_DAYS` at the top of the middleware — but note log rows count against the Airtable base's record limit, so keep retention short on the free plan. Logging is designed to always lose gracefully: rows are batched (up to 10 per Airtable call) and paced so they can't compete with the real API for Airtable's per-base rate limit, any rate-limit response pauses logging for a minute, and if Airtable is slow or the token is missing the site is unaffected and rows are simply dropped. No IP addresses and no request bodies are ever logged.
+
+**Reading the log accurately:**
+
+- **One row = one API call, not one visit.** A person browsing the finder page typically produces ~2 rows (activities + filter-options); opening an activity page adds one more. For visit/page-view counts, use Cloudflare Web Analytics — this log is for *what* people search, *which* activities they open, errors, and bot traffic.
+- **Repeat requests within a minute may be missing** — browsers cache API responses for 60s, so refreshes don't re-hit the server. The log slightly undercounts, never overcounts.
+- **The log admits its own gaps.** If rows ever had to be dropped (traffic flood, Airtable rate limit or outage), the next successful write includes a `LOG GAP · about N requests not recorded` row — filter `Method = GAP` to find them. A quiet log with no GAP rows really was a quiet site.
+- **Bot columns:** `Verified bot` is Cloudflare's cryptographic identification of known crawlers (Googlebot etc.) and can't be faked; `Likely bot` adds a looser user-agent guess. A scraper pretending to be Chrome can evade `Likely bot`, so treat it as a floor, not an exact count.
+- **Group by the `Day` column** to see traffic per day in Central time.
 ## "Submit an Activity"
 
 Visitors can suggest a new activity at `#/submit` (linked from the nav and the footer). Submissions go to `/api/submit`, which files them in the **Submissions** table with `Status = New`. Nothing appears on the site until it's approved.
