@@ -83,6 +83,7 @@ Log rows are deleted automatically after 7 days (the middleware prunes as it goe
 - **Bot columns:** `Verified bot` is Cloudflare's cryptographic identification of known crawlers (Googlebot etc.) and can't be faked; `Likely bot` adds a looser user-agent guess. A scraper pretending to be Chrome can evade `Likely bot`, so treat it as a floor, not an exact count.
 - **Group by the `Day` column** to see traffic per day in Central time.
 - **`Filters used`** records which finder filters were applied (as `Type: Yoga` / `Day: Monday` chips — one per filter, so charts count each filter separately even when several were combined). New filter values in Airtable become new chips automatically.
+- **`Zip searched`** records the 5-digit zip a visitor entered in the location search (the app sends it along for logging; distance math still happens in the browser, and precise coordinates are never sent).
 ## "Submit an Activity"
 
 Visitors can suggest a new activity at `#/submit` (linked from the nav and the footer). Submissions go to `/api/submit`, which files them in the **Submissions** table with `Status = New`. Nothing appears on the site until it's approved.

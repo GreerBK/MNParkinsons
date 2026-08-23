@@ -130,6 +130,11 @@ async function fetchActivities(filters = {}) {
   arr(filters.cost).forEach(c => params.append('cost', c))
   arr(filters.format).forEach(f => params.append('format', f))
   arr(filters.daysOfWeek).forEach(d => params.append('daysOfWeek', d))
+  // Distance filtering happens client-side below, but sending the searched
+  // zip lets the server-side traffic log count where people search from.
+  // Only well-formed 5-digit zips are sent; coordinates never are.
+  const zipForLog = filters.zip ? String(filters.zip).trim() : ''
+  if (/^\d{5}$/.test(zipForLog)) params.set('zip', zipForLog)
 
   const res = await fetch(`/api/activities?${params}`)
   if (!res.ok) throw new Error(`Airtable error: ${res.status}`)
