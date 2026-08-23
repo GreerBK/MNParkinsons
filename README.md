@@ -82,6 +82,7 @@ Log rows are deleted automatically after 7 days (the middleware prunes as it goe
 - **The log admits its own gaps.** If rows ever had to be dropped (traffic flood, Airtable rate limit or outage), the next successful write includes a `LOG GAP · about N requests not recorded` row — filter `Method = GAP` to find them. A quiet log with no GAP rows really was a quiet site.
 - **Bot columns:** `Verified bot` is Cloudflare's cryptographic identification of known crawlers (Googlebot etc.) and can't be faked; `Likely bot` adds a looser user-agent guess. A scraper pretending to be Chrome can evade `Likely bot`, so treat it as a floor, not an exact count.
 - **Group by the `Day` column** to see traffic per day in Central time.
+- **`Filters used`** records which finder filters were applied (as `Type: Yoga` / `Day: Monday` chips — one per filter, so charts count each filter separately even when several were combined). New filter values in Airtable become new chips automatically.
 ## "Submit an Activity"
 
 Visitors can suggest a new activity at `#/submit` (linked from the nav and the footer). Submissions go to `/api/submit`, which files them in the **Submissions** table with `Status = New`. Nothing appears on the site until it's approved.

@@ -59,7 +59,25 @@ const F = {
   likelyBot: 'Likely bot',
   verifiedBot: 'Verified bot',
   activity: 'Activity', // link to the viewed activity → powers per-activity view counts
+  filtersUsed: 'Filters used', // one multi-select chip per applied finder filter
 }
+
+// Finder filter params (as sent to /api/activities) → chip label prefixes.
+// Each applied filter becomes its own "Label: value" chip in a multi-select,
+// so a chart on that field counts every filter individually even when one
+// request applies several at once.
+const FILTER_PARAMS = [
+  ['type', 'Type'],
+  ['intensity', 'Intensity'],
+  ['cost', 'Cost'],
+  ['format', 'Format'],
+  ['daysOfWeek', 'Day'],
+]
+const MAX_FILTER_CHIPS = 8
+// The flush writes with typecast:true so not-yet-seen filter values become
+// new chips automatically — this pattern keeps hand-crafted URL junk from
+// minting garbage chips. Values that fail it are simply not recorded.
+const CHIP_VALUE_RE = /^[\w /:'&().,-]{1,120}$/
 
 // An activity-detail request, e.g. /api/activity/recAbC123… — capturing the
 // record ID lets the log row link to the Activities table.
@@ -151,6 +169,19 @@ function buildFields(request, status, durationMs) {
   // can't make Airtable reject the batch.
   const activityView = url.pathname.match(ACTIVITY_PATH_RE)
   if (activityView && status === 200 && !likelyBot) fields[F.activity] = [activityView[1]]
+  // Record which finder filters were applied (activities endpoint only).
+  if (url.pathname === '/api/activities') {
+    const chips = new Set()
+    for (const [param, label] of FILTER_PARAMS) {
+      for (const value of url.searchParams.getAll(param)) {
+        const v = clean(value, 120).trim()
+        if (v && CHIP_VALUE_RE.test(v) && chips.size < MAX_FILTER_CHIPS) {
+          chips.add(`${label}: ${v}`)
+        }
+      }
+    }
+    if (chips.size) fields[F.filtersUsed] = [...chips]
+  }
   if (verifiedBot) fields[F.verifiedBot] = clean(verifiedBot, 100)
   if (query) fields[F.query] = clean(query, 250)
   if (cf.country) fields[F.country] = clean(cf.country, 100)
@@ -203,7 +234,9 @@ async function flush(env) {
         Authorization: `Bearer ${env.AIRTABLE_WRITE_PAT}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ records: batch.map((fields) => ({ fields })) }),
+      // typecast lets Airtable auto-create a new "Filters used" chip when a
+      // new Activity Type (etc.) appears, instead of rejecting the batch.
+      body: JSON.stringify({ records: batch.map((fields) => ({ fields })), typecast: true }),
     })
     if (res.status === 429) {
       // The base is rate limited — stand down entirely and try these rows
