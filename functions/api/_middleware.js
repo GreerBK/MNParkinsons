@@ -21,8 +21,12 @@
 //     fraction of *successful* flushes (so never while rate-limited),
 //     keeping the table from eating the base's record limit. No cron needed.
 //
-// Rows still in the buffer when an isolate is evicted are lost. That's fine:
-// this is a traffic log, not an audit trail.
+// So the log can't silently understate traffic: whenever rows had to be
+// dropped (flood, rate limit, Airtable rejection), the next successful flush
+// writes a "LOG GAP" row saying roughly how many requests went unrecorded.
+// Filter Method = "GAP" to see them. Rows still in the buffer when an
+// isolate is evicted are lost without a marker, though — this is a traffic
+// log, not an audit trail.
 //
 // Privacy: no IP addresses and no request bodies are ever logged — only
 // coarse Cloudflare geo (country/region/city), the URL, and the user agent.
@@ -53,7 +57,13 @@ const F = {
   userAgent: 'User agent',
   referer: 'Referer',
   likelyBot: 'Likely bot',
+  verifiedBot: 'Verified bot',
+  activity: 'Activity', // link to the viewed activity → powers per-activity view counts
 }
+
+// An activity-detail request, e.g. /api/activity/recAbC123… — capturing the
+// record ID lets the log row link to the Activities table.
+const ACTIVITY_PATH_RE = /^\/api\/activity\/(rec[a-zA-Z0-9]{14,17})$/
 
 // Loose heuristic — good enough to separate "people browsing" from "scripts
 // and crawlers" at a glance. An empty user agent is treated as a bot too.
@@ -68,6 +78,7 @@ const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F]/g
 const buffer = []
 let lastFlushAt = 0
 let backoffUntil = 0
+let droppedCount = 0 // requests we couldn't log — reported via a LOG GAP row
 
 export async function onRequest(context) {
   const started = Date.now()
@@ -89,7 +100,10 @@ function logRequest(context, status, durationMs) {
   try {
     const { env, request } = context
     if (!env.AIRTABLE_WRITE_PAT || !env.AIRTABLE_BASE_ID) return
-    if (buffer.length >= BUFFER_MAX) return // flood — shed this row
+    if (buffer.length >= BUFFER_MAX) {
+      droppedCount++ // flood — shed this row, but remember it happened
+      return
+    }
 
     buffer.push(buildFields(request, status, durationMs))
 
@@ -110,12 +124,17 @@ function buildFields(request, status, durationMs) {
   const cf = request.cf || {}
   const userAgent = request.headers.get('user-agent') || ''
   const referer = request.headers.get('referer') || ''
+  // Cloudflare cryptographically verifies major crawlers (Googlebot, Bingbot,
+  // …) and names the category here — unlike the user agent, this can't lie.
+  const verifiedBot = cf.verifiedBotCategory ? String(cf.verifiedBotCategory) : ''
   const path = clean(url.pathname, 250)
   // Decode parameter-by-parameter so "q=tai%20chi%26balance" logs readably
   // but a %26 inside a value can't masquerade as an extra "&" delimiter.
   const query = [...url.searchParams]
     .map(([key, value]) => (value === '' ? key : `${key}=${value}`))
     .join(' & ')
+
+  const likelyBot = userAgent === '' || verifiedBot !== '' || BOT_RE.test(userAgent)
 
   const fields = {
     [F.summary]: `${request.method} ${path} · ${status}`,
@@ -124,8 +143,15 @@ function buildFields(request, status, durationMs) {
     [F.path]: path,
     [F.status]: status,
     [F.duration]: Math.max(0, Math.round(durationMs)),
-    [F.likelyBot]: userAgent === '' || BOT_RE.test(userAgent),
+    [F.likelyBot]: likelyBot,
   }
+  // A person successfully viewed an activity page — link the row to that
+  // activity so its "Views (last 7 days)" count picks it up. The 200 check
+  // guarantees the record exists (the route just fetched it), so the link
+  // can't make Airtable reject the batch.
+  const activityView = url.pathname.match(ACTIVITY_PATH_RE)
+  if (activityView && status === 200 && !likelyBot) fields[F.activity] = [activityView[1]]
+  if (verifiedBot) fields[F.verifiedBot] = clean(verifiedBot, 100)
   if (query) fields[F.query] = clean(query, 250)
   if (cf.country) fields[F.country] = clean(cf.country, 100)
   if (cf.region) fields[F.region] = clean(cf.region, 100)
@@ -151,9 +177,24 @@ async function flushSoon(env) {
   }
 }
 
+// A stand-in row for requests that couldn't be logged, so a quiet-looking
+// log never means "quiet site" when it was really "logger overwhelmed".
+function gapFields(count) {
+  return {
+    [F.summary]: `LOG GAP · about ${count} request${count === 1 ? '' : 's'} not recorded`,
+    [F.time]: new Date().toISOString(),
+    [F.method]: 'GAP',
+  }
+}
+
 async function flush(env) {
   lastFlushAt = Date.now()
-  const batch = buffer.splice(0, 10)
+  // If rows were dropped since the last successful write, lead the batch
+  // with a gap marker (counts are approximate — that's fine).
+  const gap = droppedCount
+  droppedCount = 0
+  const batch = buffer.splice(0, gap > 0 ? 9 : 10)
+  if (gap > 0) batch.unshift(gapFields(gap))
   if (batch.length === 0) return
   try {
     const res = await fetch(`https://api.airtable.com/v0/${env.AIRTABLE_BASE_ID}/${LOG_TABLE_ID}`, {
@@ -169,13 +210,20 @@ async function flush(env) {
       // again after the storm (unless a flood has refilled the buffer).
       backoffUntil = Date.now() + BACKOFF_MS
       if (buffer.length + batch.length <= BUFFER_MAX) buffer.unshift(...batch)
+      else droppedCount += batch.length
+      return
+    }
+    if (!res.ok) {
+      // Airtable rejected the batch (bad token, schema drift, …) — the rows
+      // are gone; make sure the loss shows up in the next gap marker.
+      droppedCount += batch.length
       return
     }
     // Only prune when the base just proved healthy, so the purge's extra
     // calls can never pile onto a rate-limit storm.
-    if (res.ok && Math.random() < PURGE_PROBABILITY) await purgeOldRows(env)
+    if (Math.random() < PURGE_PROBABILITY) await purgeOldRows(env)
   } catch {
-    // Network failure — drop this batch.
+    droppedCount += batch.length // network failure — batch lost
   }
 }
 
