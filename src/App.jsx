@@ -23,6 +23,11 @@ function toLocalYMD(d) {
 
 function parseAirtableDateToYMD(raw) {
   if (raw == null || raw === '') return null
+  // Airtable date fields arrive as plain "YYYY-MM-DD". Keep them as they are:
+  // new Date("2026-10-09") means UTC midnight, which is still the previous
+  // evening in Minnesota, so every listing used to appear and expire a day
+  // early for the people the site is for.
+  if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw
   const d = raw instanceof Date ? raw : new Date(raw)
   if (Number.isNaN(d.getTime())) return null
   return toLocalYMD(d)
@@ -64,7 +69,94 @@ function isActiveOnToday(activity, todayYMD) {
   const start = activity.startDateYMD || DATE_EPOCH_YMD
   const end = activity.endDateYMD || DATE_INFINITY_YMD
   if (start > end) return false
+  // An event is listed from the moment it is entered until it is over: the
+  // whole point of an upcoming event is that people see it ahead of time.
+  if (isEventActivity(activity)) {
+    const lastDay = activity.hasEndDate ? end : activity.hasStartDate ? start : DATE_INFINITY_YMD
+    return todayYMD <= lastDay
+  }
   return todayYMD >= start && todayYMD <= end
+}
+
+// ─────────────────────────────────────────────
+// EVENTS
+// A record tagged "Events" is a dated, one-time (or short-run) happening: a
+// bowling afternoon, a symposium. Its date lives in Start Date / End Date
+// and the Schedule field holds only the time ("1:30 to 3:30 PM"). The tag is
+// matched exactly so a hypothetical "Special Events" type is not swept in.
+// ─────────────────────────────────────────────
+function isEventActivity(a) {
+  const types = Array.isArray(a?.type) ? a.type : a?.type ? [a.type] : []
+  return types.some(t => String(t).trim().toLowerCase() === 'events')
+}
+
+// True when a results list is filtered to Events and nothing else, which is
+// when the list reads like a calendar (soonest first, "Upcoming events").
+function isEventsOnlyFilter(types) {
+  const list = (types || []).map(t => String(t).trim().toLowerCase()).filter(Boolean)
+  return list.length > 0 && list.every(t => t === 'events')
+}
+
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+
+function ymdParts(ymd) {
+  const [y, m, d] = String(ymd).split('-').map(Number)
+  return { y, m, d, weekday: WEEKDAY_NAMES[new Date(y, m - 1, d).getDay()] }
+}
+
+// Spells out an event's date the way a person would say it. One day:
+// "Friday, October 9". A range: "October 9 to 12", "October 30 to November 2",
+// or, with longRange, "Friday, October 9 to Monday, October 12, 2026".
+// End date only: "Through Sunday, October 12". The year is added when asked
+// for, or whenever the date is not in the current year. "to" is used rather
+// than a dash so screen readers and older eyes get the same sentence.
+function formatEventDate(startYMD, endYMD, { withYear = false, longRange = false } = {}) {
+  if (!startYMD && !endYMD) return ''
+  const thisYear = new Date().getFullYear()
+  const yearTail = (y) => (withYear || y !== thisYear ? `, ${y}` : '')
+  const monthDay = (p) => `${MONTH_NAMES[p.m - 1]} ${p.d}`
+  if (!startYMD) {
+    const e = ymdParts(endYMD)
+    return `Through ${e.weekday}, ${monthDay(e)}${yearTail(e.y)}`
+  }
+  const s = ymdParts(startYMD)
+  if (!endYMD || endYMD === startYMD) {
+    return `${s.weekday}, ${monthDay(s)}${yearTail(s.y)}`
+  }
+  const e = ymdParts(endYMD)
+  if (longRange) {
+    const startYear = s.y !== e.y ? `, ${s.y}` : ''
+    const endYear = s.y !== e.y ? `, ${e.y}` : yearTail(e.y)
+    return `${s.weekday}, ${monthDay(s)}${startYear} to ${e.weekday}, ${monthDay(e)}${endYear}`
+  }
+  if (s.y !== e.y) return `${monthDay(s)}, ${s.y} to ${monthDay(e)}, ${e.y}`
+  if (s.m === e.m) return `${monthDay(s)} to ${e.d}${yearTail(e.y)}`
+  return `${monthDay(s)} to ${monthDay(e)}${yearTail(e.y)}`
+}
+
+// For events the Schedule field should hold just the time. Older entries (and
+// submitters) also type the weekday or the date in front of it; strip those
+// and keep the rest only when it looks like a time of day. The site never
+// invents AM or PM.
+function extractEventTime(schedule) {
+  let s = String(schedule || '').trim()
+  s = s.replace(/^(mon|tues?|wed(nes)?|thu(rs?)?|fri|sat(ur)?|sun)(day)?s?\b\.?[,:\s-]*/i, '')
+  s = s.replace(/^(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sept?|oct|nov|dec)\b\.?\s*\d{1,2}(st|nd|rd|th)?(,?\s*\d{4})?[,:\s-]*/i, '')
+  s = s.replace(/^[\s:,\-–—]+/, '').trim()
+  if (!/\d{1,2}:\d{2}|\d{1,2}\s*(am|pm)\b|\bnoon\b/i.test(s)) return ''
+  // "1:30-3:30" reads better, and is read aloud better, as "1:30 to 3:30".
+  return s.replace(/(\d|[ap]m)\s*[-–—]\s*(\d)/gi, '$1 to $2')
+}
+
+// "Today" on the day, "Happening now" on the later days of a multi-day event.
+function eventDayPrefix(a, todayYMD) {
+  const start = a.hasStartDate ? a.startDateYMD : null
+  const end = a.hasEndDate ? a.endDateYMD : null
+  if (start && todayYMD === start) return 'Today'
+  if (!start && end && todayYMD === end) return 'Today'
+  if (start && end && todayYMD > start && todayYMD <= end) return 'Happening now'
+  return ''
 }
 
 function normalizeDisplayName(name) {
@@ -118,6 +210,8 @@ function mapRecord(record) {
     emoji:            f['Emoji']                   || '',
     startDateYMD,
     endDateYMD,
+    hasStartDate:     startDateYMD !== DATE_EPOCH_YMD,
+    hasEndDate:       endDateYMD !== DATE_INFINITY_YMD,
   }
 }
 
@@ -191,6 +285,13 @@ async function fetchActivities(filters = {}) {
     activities.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
   }
 
+  // An "Events only" list reads like a calendar: soonest first, undated last.
+  // The sort is stable, so the distance or name order above breaks ties.
+  if (isEventsOnlyFilter(arr(filters.type))) {
+    const when = a => (a.hasStartDate ? a.startDateYMD : a.hasEndDate ? a.endDateYMD : DATE_INFINITY_YMD)
+    activities.sort((a, b) => when(a).localeCompare(when(b)))
+  }
+
   return activities
 }
 
@@ -213,7 +314,10 @@ async function fetchActivityById(id) {
   if (!res.ok) throw new Error('Activity not found')
   const activity = mapRecord(await res.json())
   const todayYMD = toLocalYMD(new Date())
-  return isActiveOnToday(activity, todayYMD) ? activity : null
+  if (isActiveOnToday(activity, todayYMD)) return activity
+  // Outside its dates. Hand the page enough to explain itself: old flyer
+  // links and search results for a finished event keep landing here.
+  return { ...activity, hidden: true, pastEvent: isEventActivity(activity) }
 }
 
 
@@ -598,6 +702,25 @@ const Icon = {
       <polyline points="12 6 12 12 16 14" />
     </svg>
   ),
+  calendar: () => (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <rect x="3" y="5" width="18" height="16" rx="2" />
+      <line x1="8" y1="3" x2="8" y2="7" />
+      <line x1="16" y1="3" x2="16" y2="7" />
+      <line x1="3" y1="10" x2="21" y2="10" />
+    </svg>
+  ),
   dollar: () => (
     <svg
       width="13"
@@ -802,6 +925,7 @@ const Icon = {
 // Auto-match category names to emojis via keyword matching
 // Works with any category from Airtable — no hardcoding needed
 const EMOJI_KEYWORDS = [
+  [/\bevents?\b|festival|fundrais|expo|symposium/i, '📅'],
   [/box/i, '🥊'], [/yoga/i, '🧘'], [/exercis|workout|fitness|gym/i, '🏋️'],
   [/support|group|community/i, '🤝'], [/danc/i, '💃'], [/cycl|bik/i, '🚴'],
   [/swim|aqua|pool|water/i, '🏊'], [/walk|hik/i, '🚶'], [/tai.?chi|qigong/i, '🧎'],
@@ -1086,7 +1210,7 @@ function Home() {
                 type="button"
                 key={type}
                 className="cat-card"
-                aria-label={`Find ${type} activities`}
+                aria-label={type.trim().toLowerCase() === 'events' ? 'See upcoming events' : `Find ${type} activities`}
                 onClick={() => navigate(`#/search?type=${encodeURIComponent(type)}`)}
               >
                 <span className="cat-card-icon" aria-hidden="true">{typeEmojis[type] || getCategoryEmoji(type)}</span>
@@ -1121,7 +1245,7 @@ const EMPTY_FILTER_OPTIONS = { activityType: [], intensity: [], cost: [], format
 
 // Default options so sidebar always shows full lists even when initial results are filtered (e.g. from home page by activity type)
 const DEFAULT_FILTER_OPTIONS = {
-  activityType: ['Boxing', 'Yoga', 'Support Group'],
+  activityType: ['Boxing', 'Yoga', 'Support Group', 'Events'],
   intensity: ['High', 'Moderate', 'Light'],
   cost: ['Free', 'Fee', 'Free Trial'],
   format: ['In-Person', 'Virtual'],
@@ -1159,8 +1283,13 @@ function withoutHidden(list, hidden) {
   return list.filter(o => !hidden.has(String(o).toLowerCase()))
 }
 
+// Events sits first (it is a calendar, not a kind of activity); the rest A to Z.
 function unionActivityTypes(...lists) {
-  return withoutHidden(unionSortedStrings(...lists), HIDDEN_ACTIVITY_TYPES)
+  const isEvents = s => String(s).trim().toLowerCase() === 'events'
+  return withoutHidden(unionValues(...lists), HIDDEN_ACTIVITY_TYPES).sort((a, b) => {
+    if (isEvents(a) !== isEvents(b)) return isEvents(a) ? -1 : 1
+    return a.localeCompare(b, undefined, { sensitivity: 'base' })
+  })
 }
 
 // Intensity shows in fixed effort order (High → Moderate → Light), unknown values last
@@ -1629,13 +1758,17 @@ function SearchResults({ params }) {
           ) : (
             <>
               <h1 id="results-heading" className="results-heading">
-                {(activeFilterCount > 0 || params.get('q') || params.get('zip') || params.get('lat'))
-                  ? 'Activities that match your search'
-                  : 'All activities'}
+                {isEventsOnlyFilter(paramToArray(params.get('type')))
+                  ? 'Upcoming events'
+                  : (activeFilterCount > 0 || params.get('q') || params.get('zip') || params.get('lat'))
+                    ? 'Activities that match your search'
+                    : 'All activities'}
               </h1>
               <div aria-live="polite" aria-atomic="true">
                 <p className="results-meta">
-                  <strong>{activities.length}</strong> {activities.length === 1 ? 'activity' : 'activities'} found
+                  <strong>{activities.length}</strong> {isEventsOnlyFilter(paramToArray(params.get('type')))
+                    ? (activities.length === 1 ? 'upcoming event' : 'upcoming events')
+                    : (activities.length === 1 ? 'activity' : 'activities')} found
                   {(params.get('lat') && params.get('lng')) ? ' near you' : params.get('zip') ? ` near ${params.get('zip')}` : ''}
                   {((params.get('lat') && params.get('lng')) || params.get('zip')) && ` within ${params.get('distance') || DISTANCE_DEFAULT} mi`}
                 </p>
@@ -1655,12 +1788,21 @@ function SearchResults({ params }) {
                 </div>
               )}
               {activities.length === 0 ? (
-                <div className="empty-state">
-                  <div className="empty-state-icon" aria-hidden="true">🔍</div>
-                  <h2>No activities found</h2>
-                  <p>Try adjusting your filters, expanding your search distance, or searching from a different location.</p>
-                  <button className="btn btn-primary" onClick={clearFilters}>Clear all filters</button>
-                </div>
+                isEventsOnlyFilter(paramToArray(params.get('type'))) ? (
+                  <div className="empty-state">
+                    <div className="empty-state-icon" aria-hidden="true">📅</div>
+                    <h2>No upcoming events right now</h2>
+                    <p>Check back soon, or browse all activities.</p>
+                    <a className="btn btn-primary" href="#/search">Browse all activities</a>
+                  </div>
+                ) : (
+                  <div className="empty-state">
+                    <div className="empty-state-icon" aria-hidden="true">🔍</div>
+                    <h2>No activities found</h2>
+                    <p>Try adjusting your filters, expanding your search distance, or searching from a different location.</p>
+                    <button className="btn btn-primary" onClick={clearFilters}>Clear all filters</button>
+                  </div>
+                )
               ) : (
                 <ul className="activity-list" role="list">
                   {activities.map(a => <ActivityCard key={a.id} activity={a} />)}
@@ -1686,6 +1828,17 @@ function ActivityCard({ activity: a }) {
     return label === 'Free'
   })()
 
+  // Events carry their date on the card, and inside the link text so a
+  // keyboard or screen-reader user hears when it is without leaving the
+  // link. The recurring-schedule lines are not shown for them.
+  const isEvent = isEventActivity(a)
+  const dateText = isEvent
+    ? formatEventDate(a.hasStartDate ? a.startDateYMD : null, a.hasEndDate ? a.endDateYMD : null)
+    : ''
+  const timeText = isEvent ? extractEventTime(a.schedule) : ''
+  const dayPrefix = dateText ? eventDayPrefix(a, toLocalYMD(new Date())) : ''
+  const spokenDate = [dayPrefix, dateText, timeText].filter(Boolean).join(', ')
+
   return (
     <li className="activity-card">
       <div className="card-top">
@@ -1693,7 +1846,7 @@ function ActivityCard({ activity: a }) {
           <h2 className="card-name">
             <a className="card-link" href={`#/activity/${a.id}`}>
               {a.name}
-              <span className="sr-only"> — view details</span>
+              <span className="sr-only">{spokenDate ? `, ${spokenDate}, view details` : ' — view details'}</span>
             </a>
           </h2>
           <div className="card-location">
@@ -1702,18 +1855,26 @@ function ActivityCard({ activity: a }) {
           {a.address && (
             <div className="card-address">{a.address}</div>
           )}
-          {(a.daysOfWeek || a.schedule) && (
+          {dateText ? (
+            <div className="card-days card-event-date">
+              <Icon.calendar />
+              <span>
+                {dayPrefix && <span className="event-today">{dayPrefix}, </span>}
+                {dateText}{timeText && `, ${timeText}`}
+              </span>
+            </div>
+          ) : (a.daysOfWeek || a.schedule) ? (
             <div className="card-days">
               {a.daysOfWeek ? <>Days: {a.daysOfWeek}</> : <>Schedule: {a.schedule}</>}
             </div>
-          )}
+          ) : null}
         </div>
         <span className={`badge ${isFreeCost ? 'badge-cost-free' : ''}`}>
           {isFreeCost ? 'Free' : <><Icon.dollar />{a.costCategory || a.costDisplay || '—'}</>}
         </span>
       </div>
       <div className="card-meta">
-        {a.schedule && <span className="badge"><Icon.clock />{a.schedule.split(',')[0]}</span>}
+        {a.schedule && !isEvent && <span className="badge"><Icon.clock />{a.schedule.split(',')[0]}</span>}
         {a.intensity && <span className="badge"><Icon.bolt />{a.intensity}</span>}
         {(Array.isArray(a.type) ? a.type.length > 0 : !!a.type) && <span className="badge blue">{Array.isArray(a.type) ? a.type.join(', ') : a.type}</span>}
         {a.dist != null && <span className="badge">{a.dist.toFixed(1)} mi away</span>}
@@ -1886,7 +2047,7 @@ function ActivityDetail({ id }) {
   // WCAG 2.4.2 — set specific page title once activity name is known
   useEffect(() => {
     if (activity?.name) {
-      document.title = `${activity.name} — MN Parkinson's Connect`
+      document.title = `${activity.name}${activity.pastEvent ? ' (past event)' : ''} — MN Parkinson's Connect`
     }
   }, [activity])
 
@@ -1901,12 +2062,59 @@ function ActivityDetail({ id }) {
     </div>
   )
   if (!activity) return null
+  if (activity.hidden && !activity.pastEvent) return (
+    <div className="state-msg state-msg-error" role="alert" style={{padding:'4rem'}}>
+      <p><strong>This activity is no longer listed.</strong></p>
+      <p style={{marginTop:'0.5rem',fontSize:'0.9rem'}}>It is outside the dates it runs, so it has been taken off the site.</p>
+      <a className="state-msg-action" href="#/search">
+        <Icon.back /> Back to search
+      </a>
+    </div>
+  )
+  if (activity.pastEvent) {
+    // A finished event, reached from an old flyer, post or search result.
+    // Not an error: keep the name and venue so the person recognises the
+    // page, say when it was, and point at what is coming up. No contact
+    // details or sign-up button, so nobody phones a venue about it.
+    const start = activity.hasStartDate ? activity.startDateYMD : null
+    const end = activity.hasEndDate ? activity.endDateYMD : null
+    const when = start
+      ? formatEventDate(start, end, { withYear: true, longRange: true })
+      : end ? formatEventDate(end, end, { withYear: true }) : ''
+    const types = Array.isArray(activity.type) ? activity.type.join(', ') : activity.type
+    return (
+      <div className="state-msg past-event">
+        <div className="detail-tags past-event-tags">
+          {types && <span className="badge blue">{types}</span>}
+        </div>
+        <h1 className="detail-title">{activity.name}</h1>
+        {activity.location && (
+          <p className="detail-venue"><span className="detail-venue-at">at </span>{activity.location}</p>
+        )}
+        <p className="past-event-note">
+          {when
+            ? (start ? `This event took place on ${when} and is no longer listed.` : `This event ended on ${when} and is no longer listed.`)
+            : 'This event has ended and is no longer listed.'}
+        </p>
+        <div className="past-event-actions">
+          <a className="state-msg-action" href="#/search?type=Events">See upcoming events</a>
+          <a className="state-msg-link" href="#/search">Back to search</a>
+        </div>
+      </div>
+    )
+  }
 
   const a = activity
 
   // Derived view data — keeps the JSX below readable.
   const phones = splitPhones(a.phone)
   const scheduleGroups = parseSchedule(a.schedule)
+  const isEvent = isEventActivity(a)
+  const eventDate = isEvent
+    ? formatEventDate(a.hasStartDate ? a.startDateYMD : null, a.hasEndDate ? a.endDateYMD : null, { withYear: true, longRange: true })
+    : ''
+  const eventTime = isEvent ? extractEventTime(a.schedule) : ''
+  const eventPrefix = eventDate ? eventDayPrefix(a, toLocalYMD(new Date())) : ''
   const websiteRaw = String(a.website || '').trim()
   const websiteUrl = websiteRaw && !/^(n\/?a|none|tbd|-|—)$/i.test(websiteRaw)
     ? safeHttpUrl(websiteRaw)
@@ -2010,8 +2218,17 @@ function ActivityDetail({ id }) {
           {/* Left column — schedule, location, contact, about */}
           <div>
             <section className="info-card" aria-labelledby="schedule-heading">
-              <h2 id="schedule-heading">Schedule</h2>
-              {scheduleGroups ? (
+              <h2 id="schedule-heading">{isEvent ? 'Date and time' : 'Schedule'}</h2>
+              {isEvent ? (
+                <>
+                  <Row
+                    label="Date"
+                    value={eventDate ? <>{eventPrefix && <span className="event-today">{eventPrefix}, </span>}{eventDate}</> : ''}
+                  />
+                  <Row label="Time" value={eventTime} />
+                  {!eventTime && <Row label="Days & times" value={a.schedule} preserveNewlines />}
+                </>
+              ) : scheduleGroups ? (
                 <dl className="schedule-list">
                   {scheduleGroups.map((g, i) => (
                     <div className="schedule-row" key={i}>
@@ -2657,7 +2874,7 @@ function SubmitActivity() {
                 <SubmitTextField
                   id="submit-schedule"
                   label="Meeting times"
-                  hint='e.g. "Tuesdays 10–11 AM" or "1st and 3rd Thursdays, 6:30 PM"'
+                  hint='e.g. "Tuesdays 10 to 11 AM", "1st and 3rd Thursdays, 6:30 PM", or for a one-time event just the time: "1:30 to 3:30 PM"'
                   value={form.schedule}
                   onChange={set('schedule')}
                   type="text"
@@ -2668,7 +2885,7 @@ function SubmitActivity() {
                   <SubmitTextField
                     id="submit-start-date"
                     label="Start date"
-                    hint="Only for programs that run for a limited time."
+                    hint="For a one-time event, the event date. For classes, only if they run for a limited time."
                     value={form.startDate}
                     onChange={set('startDate')}
                     type="date"
@@ -2676,6 +2893,7 @@ function SubmitActivity() {
                   <SubmitTextField
                     id="submit-end-date"
                     label="End date"
+                    hint="For an event that runs more than one day, the last day. Otherwise leave blank."
                     error={errors.endDate}
                     value={form.endDate}
                     onChange={set('endDate')}

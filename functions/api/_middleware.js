@@ -34,7 +34,7 @@
 const LOG_TABLE_ID = 'tblwtk9Q0bfg8uAYG' // "API Log" table (not secret)
 
 const RETENTION_DAYS = 7 // keep modest: log rows share the base's record cap
-const PURGE_PROBABILITY = 0.1 // chance a successful flush also prunes
+const PURGE_PROBABILITY = 0.25 // chance a successful flush also prunes
 const PURGE_MAX_BATCHES = 3 // ≤3 delete calls × 10 rows = ≤30 rows per prune
 
 const FLUSH_DELAY_MS = 4000 // let a burst's rows pool into one batch
@@ -98,6 +98,7 @@ const buffer = []
 let lastFlushAt = 0
 let backoffUntil = 0
 let droppedCount = 0 // requests we couldn't log — reported via a LOG GAP row
+let purgeBacklog = false // last prune found a full page: prune on every flush until clear
 
 export async function onRequest(context) {
   const started = Date.now()
@@ -204,16 +205,40 @@ function buildFields(request, status, durationMs) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+// Today's date in Minnesota, as "YYYY-MM-DD". The visitor code rotates on
+// this day so it lines up with the log's Central-time Day column; rotating
+// on the UTC day split anyone browsing across 7 pm into two codes. Built
+// from formatToParts so it does not depend on locale formatting; falls back
+// to the UTC date if the runtime ever lacks time-zone data.
+function centralDay(now = new Date()) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Chicago',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(now)
+    const get = (type) => parts.find((p) => p.type === type)?.value
+    const y = get('year')
+    const m = get('month')
+    const d = get('day')
+    if (y && m && d) return `${y}-${m}-${d}`
+  } catch {
+    // fall through
+  }
+  return now.toISOString().slice(0, 10)
+}
+
 // Anonymous visitor code, in the style of privacy-first analytics tools:
-// HMAC(secret, ip | user-agent | UTC day), truncated. One-way (the address
-// can't be recovered), keyed with a server secret (outsiders can't test
-// guesses), and rotating daily (codes can't link a visitor across days).
-// The raw IP is read here and never stored anywhere.
+// HMAC(secret, ip | user-agent | Central day), truncated. One-way (the
+// address can't be recovered), keyed with a server secret (outsiders can't
+// test guesses), and rotating daily (codes can't link a visitor across
+// days). The raw IP is read here and never stored anywhere.
 async function visitorHash(env, request) {
   try {
     const ip = request.headers.get('CF-Connecting-IP') || ''
     if (!ip) return ''
-    const day = new Date().toISOString().slice(0, 10)
+    const day = centralDay()
     const message = `${ip}|${request.headers.get('user-agent') || ''}|${day}`
     const encoder = new TextEncoder()
     const key = await crypto.subtle.importKey(
@@ -292,8 +317,10 @@ async function flush(env) {
       return
     }
     // Only prune when the base just proved healthy, so the purge's extra
-    // calls can never pile onto a rate-limit storm.
-    if (Math.random() < PURGE_PROBABILITY) await purgeOldRows(env)
+    // calls can never pile onto a rate-limit storm. Once a prune finds a
+    // full page of old rows, keep pruning on every flush until it is clear,
+    // so a backlog cannot build up again.
+    if (purgeBacklog || Math.random() < PURGE_PROBABILITY) await purgeOldRows(env)
   } catch {
     droppedCount += batch.length // network failure — batch lost
   }
@@ -315,11 +342,19 @@ async function purgeOldRows(env) {
     )
     listUrl.searchParams.set('pageSize', String(PURGE_MAX_BATCHES * 10))
     listUrl.searchParams.append('fields[]', F.time) // keep the response small
+    // Oldest first, so the table's horizon actually moves; unsorted, the
+    // purge nibbled arbitrary old rows and the oldest lingered for weeks.
+    listUrl.searchParams.set('sort[0][field]', F.time)
+    listUrl.searchParams.set('sort[0][direction]', 'asc')
     const res = await fetch(listUrl, {
       headers: { Authorization: `Bearer ${env.AIRTABLE_PAT}` },
     })
-    if (!res.ok) return
+    if (!res.ok) {
+      console.warn(`traffic log purge: list returned ${res.status}`)
+      return
+    }
     const ids = ((await res.json()).records || []).map((r) => r.id)
+    purgeBacklog = ids.length >= PURGE_MAX_BATCHES * 10
 
     for (let i = 0; i < ids.length; i += 10) {
       await sleep(FLUSH_MIN_GAP_MS) // pace deletes like everything else
@@ -329,9 +364,13 @@ async function purgeOldRows(env) {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${env.AIRTABLE_WRITE_PAT}` },
       })
-      if (!del.ok) return // e.g. rate limited — the next pass will catch up
+      if (!del.ok) {
+        console.warn(`traffic log purge: delete returned ${del.status}`)
+        return // e.g. rate limited — the next pass will catch up
+      }
     }
-  } catch {
+  } catch (err) {
     // Best-effort cleanup — never let it surface anywhere.
+    console.warn('traffic log purge failed', err && err.message)
   }
 }

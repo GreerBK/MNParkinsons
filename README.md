@@ -23,12 +23,12 @@ The app reads these fields from the `Activities` table in Airtable:
 | Field | Type | Notes |
 |---|---|---|
 | Activity Name | singleLineText | Primary name |
-| Activity Type | multipleSelects | Category browse + filter |
+| Activity Type | multipleSelects | Category browse + filter. "Events" is special, see [Events](#events) |
 | Location | singleLineText | Venue name |
 | Address | multilineText | Full street address |
 | Activity Zip Code | multilineText | 5-digit zip or "Virtual" |
 | Virtual/In-Person/Hybrid | singleSelect | Format field |
-| Schedule | multilineText | Human-readable schedule |
+| Schedule | multilineText | Human-readable schedule. For events: the time only ("1:30 to 3:30 PM") |
 | Days of Week | multipleSelects | Monday … Sunday |
 | Intensity | multipleSelects | Light / Moderate / High |
 | Cost | multilineText | Human-readable cost text |
@@ -42,13 +42,28 @@ The app reads these fields from the `Activities` table in Airtable:
 | online website (clickable link) | url | (legacy display-label field — consolidate later) |
 | Caregiver Friendly | singleSelect | Yes / No / Unknown |
 | Status | singleSelect | Active / Inactive / Pending |
-| Start Date | dateTime | (consider converting to `date`) |
-| End Date | dateTime | (consider converting to `date`) |
+| Start Date | date | First day the listing shows (optional). For events: the event date |
+| End Date | date | Last day the listing shows (optional). For events: the last day of a multi-day event |
 | Latitude | number | Decimal — auto-filled by Geocode automation |
 | Longitude | number | Decimal — auto-filled by Geocode automation |
 | Geocoded At | dateTime | Timestamp set by the automation when lat/lng are written |
 | Additional Details | multilineText | Free-text notes |
 | Description | richText | Long-form description |
+
+## Events
+
+Categories are just Activity Type options, and a category tile appears on the home page as soon as one visible activity carries it. "Events" is the one category the site treats differently: it is for dated, one-time or short-run happenings (a bowling afternoon, a symposium) rather than things that meet every week.
+
+To list an event: tag it **Events** (plus any other type that fits, e.g. Golf), put the date in **Start Date** (and the last day in **End Date** if it runs more than one day), and put only the time in **Schedule**, with AM or PM spelled out ("1:30 to 3:30 PM"). The site then:
+
+- shows the date and time on the card and on the detail page, with the weekday taken from Start Date (so it can never disagree with the text);
+- says "Today" on the day and "Happening now" on the later days of a multi-day event;
+- sorts an Events-only list soonest first and heads it "Upcoming events";
+- hides the event the day after End Date (or after Start Date when End Date is blank). Nothing needs to be taken down by hand.
+
+Leave past events marked Active. The site hides them from every list on its own, and an old link (a flyer, a Facebook post, a search result) then shows "This event took place on ... and is no longer listed" instead of an error. Setting a past event Inactive turns that old link into the generic error page.
+
+Dates are plain `YYYY-MM-DD` values and are compared as such; they are never run through `new Date()`, which would read them as UTC midnight and shift every date a day early for visitors in Minnesota.
 
 ## Geocoding
 
@@ -73,7 +88,7 @@ Two complementary views of site traffic:
 - **API requests** — the middleware in [`functions/api/_middleware.js`](functions/api/_middleware.js) writes one row per `/api/*` request to the **API Log** table in Airtable: endpoint, search/filter terms, response status, coarse location, and a "Likely bot" flag. It reuses `AIRTABLE_WRITE_PAT`, so no extra setup is needed.
 - **Per-activity view counts** — when a person opens an activity page, the log row links to that activity, and the Activities table's **Views (last 7 days)** column counts those links. Sort Activities by that column to see what's popular. Bots and failed requests are excluded; the count is a rolling 7-day window (it moves with the log's retention).
 
-Log rows are deleted automatically after 7 days (the middleware prunes as it goes — no cron job). To keep more or less history, change `RETENTION_DAYS` at the top of the middleware — but note log rows count against the Airtable base's record limit, so keep retention short on the free plan. Logging is designed to always lose gracefully: rows are batched (up to 10 per Airtable call) and paced so they can't compete with the real API for Airtable's per-base rate limit, any rate-limit response pauses logging for a minute, and if Airtable is slow or the token is missing the site is unaffected and rows are simply dropped. No IP addresses and no request bodies are ever logged. The `Visitor` column is an anonymous code — a one-way, daily-rotating, secret-keyed scramble (HMAC) of address + browser, the standard privacy-first analytics technique — from which the address can't be recovered and a visitor can't be followed across days.
+Log rows are deleted automatically after 7 days (the middleware prunes as it goes, oldest first, and keeps pruning on every flush while a backlog remains — no cron job). To keep more or less history, change `RETENTION_DAYS` at the top of the middleware — but note log rows count against the Airtable base's record limit, so keep retention short on the free plan. Logging is designed to always lose gracefully: rows are batched (up to 10 per Airtable call) and paced so they can't compete with the real API for Airtable's per-base rate limit, any rate-limit response pauses logging for a minute, and if Airtable is slow or the token is missing the site is unaffected and rows are simply dropped. No IP addresses and no request bodies are ever logged. The `Visitor` column is an anonymous code — a one-way, daily-rotating, secret-keyed scramble (HMAC) of address + browser, the standard privacy-first analytics technique — from which the address can't be recovered and a visitor can't be followed across days. The code rotates at midnight Central time, the same day boundary the `Day` column uses.
 
 **Reading the log accurately:**
 
@@ -101,7 +116,7 @@ The endpoint reuses the `AIRTABLE_WRITE_PAT` variable set up for reporting (abov
 
 - **No user input ever reaches Airtable formulas.** The API functions fetch Active records with a fixed query and apply search/filters in plain JavaScript, so quotes or symbols in a search can't break or alter the query.
 - **Edge caching.** Responses are cached at Cloudflare's edge for ~5 minutes, so even heavy traffic stays far below Airtable's rate limits. New Airtable edits appear on the site within a few minutes.
-- **Security headers** (Content-Security-Policy, frame blocking, etc.) live in [`public/_headers`](public/_headers).
+- **Security headers** (Content-Security-Policy, frame blocking, etc.) live in [`public/_headers`](public/_headers). The policy allows Cloudflare's Web Analytics beacon (`static.cloudflareinsights.com` for the script, `cloudflareinsights.com` for its report); without those two entries the browser blocks it and Web Analytics records nothing.
 - **Fonts are self-hosted** — no third-party requests, nothing shared with Google.
 
 ## Local development
