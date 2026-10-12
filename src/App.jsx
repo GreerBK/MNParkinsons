@@ -97,6 +97,21 @@ function isEventsOnlyFilter(types) {
   return list.length > 0 && list.every(t => t === 'events')
 }
 
+// The "Browse all activities" link on an empty events list keeps the
+// person's location (zip, or lat/lng/distance) and drops only the filters,
+// the same as "Clear all filters" does.
+function browseAllHref(params) {
+  const keep = new URLSearchParams()
+  if (params.get('zip')) keep.set('zip', params.get('zip'))
+  else if (params.get('lat') && params.get('lng')) {
+    keep.set('lat', params.get('lat'))
+    keep.set('lng', params.get('lng'))
+    if (params.get('distance')) keep.set('distance', params.get('distance'))
+  }
+  const qs = keep.toString()
+  return `#/search${qs ? `?${qs}` : ''}`
+}
+
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
 const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
@@ -146,7 +161,7 @@ function extractEventTime(schedule) {
   s = s.replace(/^[\s:,\-–—]+/, '').trim()
   if (!/\d{1,2}:\d{2}|\d{1,2}\s*(am|pm)\b|\bnoon\b/i.test(s)) return ''
   // "1:30-3:30" reads better, and is read aloud better, as "1:30 to 3:30".
-  return s.replace(/(\d|[ap]m)\s*[-–—]\s*(\d)/gi, '$1 to $2')
+  return s.replace(/(\d|[ap]m)\s*[-–—]\s*(\d|noon)/gi, '$1 to $2')
 }
 
 // "Today" on the day, "Happening now" on the later days of a multi-day event.
@@ -316,8 +331,18 @@ async function fetchActivityById(id) {
   const todayYMD = toLocalYMD(new Date())
   if (isActiveOnToday(activity, todayYMD)) return activity
   // Outside its dates. Hand the page enough to explain itself: old flyer
-  // links and search results for a finished event keep landing here.
-  return { ...activity, hidden: true, pastEvent: isEventActivity(activity) }
+  // links and search results for a finished event keep landing here, and a
+  // class shared ahead of its first day should say so rather than claim it
+  // was taken down. A record whose End Date is before its Start Date is a
+  // data slip, not a finished event, so it gets the plain "not listed" page.
+  const isEvent = isEventActivity(activity)
+  const datesInOrder = activity.startDateYMD <= activity.endDateYMD
+  return {
+    ...activity,
+    hidden: true,
+    pastEvent: isEvent && datesInOrder,
+    notYetStarted: !isEvent && datesInOrder && activity.hasStartDate && todayYMD < activity.startDateYMD,
+  }
 }
 
 
@@ -1133,7 +1158,7 @@ function Home() {
           if (a.emoji && !emojis[name]) emojis[name] = a.emoji
         })
       })
-      setTypes(withoutHidden([...seen], HIDDEN_ACTIVITY_TYPES).sort())
+      setTypes(unionActivityTypes([...seen]))
       setTypeEmojis(emojis)
       setActivityCount(acts.length)
     }).catch(() => {})
@@ -1793,7 +1818,7 @@ function SearchResults({ params }) {
                     <div className="empty-state-icon" aria-hidden="true">📅</div>
                     <h2>No upcoming events right now</h2>
                     <p>Check back soon, or browse all activities.</p>
-                    <a className="btn btn-primary" href="#/search">Browse all activities</a>
+                    <a className="btn btn-primary" href={browseAllHref(params)}>Browse all activities</a>
                   </div>
                 ) : (
                   <div className="empty-state">
@@ -1836,8 +1861,13 @@ function ActivityCard({ activity: a }) {
     ? formatEventDate(a.hasStartDate ? a.startDateYMD : null, a.hasEndDate ? a.endDateYMD : null)
     : ''
   const timeText = isEvent ? extractEventTime(a.schedule) : ''
+  // When the Schedule text is not a recognisable time ("Doors open at 6"),
+  // keep showing it as typed rather than dropping it from the card.
+  const scheduleFallback = isEvent && dateText && !timeText ? String(a.schedule || '').trim() : ''
   const dayPrefix = dateText ? eventDayPrefix(a, toLocalYMD(new Date())) : ''
-  const spokenDate = [dayPrefix, dateText, timeText].filter(Boolean).join(', ')
+  // The link name carries the date (so a Tab stop says when it is) but not
+  // the time; the visible line below has both, so nothing is read twice.
+  const spokenDate = [dayPrefix, dateText].filter(Boolean).join(', ')
 
   return (
     <li className="activity-card">
@@ -1856,13 +1886,16 @@ function ActivityCard({ activity: a }) {
             <div className="card-address">{a.address}</div>
           )}
           {dateText ? (
-            <div className="card-days card-event-date">
-              <Icon.calendar />
-              <span>
-                {dayPrefix && <span className="event-today">{dayPrefix}, </span>}
-                {dateText}{timeText && `, ${timeText}`}
-              </span>
-            </div>
+            <>
+              <div className="card-days card-event-date">
+                <Icon.calendar />
+                <span>
+                  {dayPrefix && <span className="event-today">{dayPrefix}, </span>}
+                  {dateText}{timeText && `, ${timeText}`}
+                </span>
+              </div>
+              {scheduleFallback && <div className="card-days">Schedule: {scheduleFallback}</div>}
+            </>
           ) : (a.daysOfWeek || a.schedule) ? (
             <div className="card-days">
               {a.daysOfWeek ? <>Days: {a.daysOfWeek}</> : <>Schedule: {a.schedule}</>}
@@ -2062,6 +2095,15 @@ function ActivityDetail({ id }) {
     </div>
   )
   if (!activity) return null
+  if (activity.hidden && activity.notYetStarted) return (
+    <div className="state-msg" role="status" style={{padding:'4rem'}}>
+      <p><strong>This activity is not listed yet.</strong></p>
+      <p style={{marginTop:'0.5rem',fontSize:'0.95rem'}}>It starts on {formatEventDate(activity.startDateYMD, null, { withYear: true })}. Check back then.</p>
+      <a className="state-msg-action" href="#/search">
+        <Icon.back /> Back to search
+      </a>
+    </div>
+  )
   if (activity.hidden && !activity.pastEvent) return (
     <div className="state-msg state-msg-error" role="alert" style={{padding:'4rem'}}>
       <p><strong>This activity is no longer listed.</strong></p>
