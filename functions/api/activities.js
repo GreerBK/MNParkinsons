@@ -9,6 +9,7 @@ const FIELDS = {
   costCategory: 'Cost Category',
   format: 'Virtual/In-Person/Hybrid',
   daysOfWeek: 'Days of Week',
+  schedule: 'Schedule',
 }
 
 // Only this constant formula is ever sent to Airtable. User input is applied
@@ -41,6 +42,19 @@ function includesCI(fieldValue, needle) {
 
 function equalsCI(fieldValue, wanted) {
   return fieldText(fieldValue) === String(wanted || '').trim().toLowerCase()
+}
+
+const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+// Records (especially monthly support groups) often leave the structured
+// "Days of Week" field empty and only name the day inside the free-text
+// Schedule ("3rd Monday of every month: 2-3:30"). When the field is empty,
+// derive the days from that text so the day filter still finds them.
+function effectiveDays(f) {
+  const days = f[FIELDS.daysOfWeek]
+  if (fieldText(days) !== '') return days
+  const schedule = String(f[FIELDS.schedule] || '')
+  return WEEKDAYS.filter(d => new RegExp(`\\b${d}s?\\b`, 'i').test(schedule))
 }
 
 // Fetch every Active record, going through the edge cache first. All requests
@@ -129,7 +143,7 @@ export async function onRequestGet(context) {
     if (intensity.length && !intensity.some(i => includesCI(f[FIELDS.intensity], i))) return false
     if (cost.length && !cost.some(c => equalsCI(f[FIELDS.costCategory], c))) return false
     if (format.length && !format.some(v => equalsCI(f[FIELDS.format], v))) return false
-    if (daysOfWeek.length && !daysOfWeek.some(d => includesCI(f[FIELDS.daysOfWeek], d))) return false
+    if (daysOfWeek.length && !daysOfWeek.some(d => includesCI(effectiveDays(f), d))) return false
     return true
   })
 
