@@ -1130,6 +1130,7 @@ function Home() {
       ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
       : false
   )
+  const categoriesHeadingRef = useRef(null)
 
   // When user allows location on home, go straight to search with "near you"
   useEffect(() => {
@@ -1185,6 +1186,20 @@ function Home() {
     navigate(`#/search?${p.toString()}`)
   }
 
+  // The hero's "Browse by category" cue. A plain in-page anchor is out (the
+  // hash is the router), so scroll by hand: land the section just under the
+  // sticky nav, whatever height the nav has on this screen, and hand focus to
+  // the heading so keyboard and screen-reader users carry on from there.
+  const scrollToCategories = () => {
+    const heading = categoriesHeadingRef.current
+    if (!heading) return
+    const section = heading.closest('section') || heading
+    const navHeight = document.querySelector('nav')?.getBoundingClientRect().height || 0
+    const top = section.getBoundingClientRect().top + window.scrollY - navHeight
+    heading.focus({ preventScroll: true })
+    window.scrollTo({ top, behavior: prefersReducedMotion ? 'auto' : 'smooth' })
+  }
+
   return (
     <div>
       <section className="hero">
@@ -1218,7 +1233,16 @@ function Home() {
             aria-describedby={locError ? 'home-loc-error' : undefined}
           >
             <span className="btn-loc-icon" aria-hidden="true">{locLoading ? <span className="btn-loc-spinner" /> : <Icon.location />}</span>
-            <span className="btn-loc-label">{locLoading ? 'Locating…' : 'Use my location'}</span>
+            {/* On phones the label shortens to "Near me" so zip, location and
+                Search still fit on one row (CSS swaps the two spans). */}
+            <span className="btn-loc-label">
+              {locLoading ? 'Locating…' : (
+                <>
+                  <span className="btn-loc-label-full">Use my location</span>
+                  <span className="btn-loc-label-short">Near me</span>
+                </>
+              )}
+            </span>
           </button>
           {locError && (
             <span id="home-loc-error" className="loc-error" role="alert">
@@ -1227,11 +1251,19 @@ function Home() {
           )}
           <button type="submit" className="btn btn-primary">Search</button>
         </form>
+
+          {/* Scroll cue: the other way in, and a sign that the page goes on below the hero */}
+          <button type="button" className="hero-scroll" onClick={scrollToCategories}>
+            <span className="hero-scroll-label">Or browse by category</span>
+            <span className="hero-scroll-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" focusable="false"><path d="m6 9 6 6 6-6" /></svg>
+            </span>
+          </button>
         </div>
       </section>
 
-      <section className="categories container">
-        <h2>Browse by Category</h2>
+      <section className="categories container" aria-labelledby="browse-heading">
+        <h2 id="browse-heading" ref={categoriesHeadingRef} tabIndex={-1}>Browse by Category</h2>
         {activityCount > 0 && (
           <p className="categories-sub">{activityCount} {activityCount === 1 ? 'activity' : 'activities'} across Minnesota</p>
         )}
