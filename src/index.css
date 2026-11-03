@@ -193,6 +193,52 @@ nav {
   flex-wrap: wrap;
 }
 
+/* The CTAs' short labels and the wordmark's line break are off by default;
+   the phone block below switches them on. */
+.nav-logo-break,
+.nav-cta-label-short {
+  display: none;
+}
+
+/* Phones and small tablets: keep the sticky nav to ONE compact row. With the
+   full labels the two CTAs wrapped under the logo below about 610px, which
+   made the nav 129px tall at 360-375px and 170px at 320px (77px on desktop):
+   a sixth of a phone screen, permanently. Here the wordmark drops to two
+   lines ("MN Parkinson's" over "Connect"), the CTAs read "Submit" and
+   "Search" (the names of the pages they open) and every target stays 44px
+   tall, for a 61px nav. */
+@media (max-width: 640px) {
+  .nav-inner {
+    padding: 0.5rem 0.75rem;
+    gap: 0.75rem;
+  }
+  .nav-logo {
+    /* Plain inline flow instead of inline-flex, so "MN" and the span read as
+       one text block that breaks at .nav-logo-break. */
+    display: inline-block;
+    font-size: 1rem;
+    line-height: 1.1;
+    /* two 17.6px lines + 8.8px of padding = the 44px minimum target */
+    padding: 0.275rem 0;
+  }
+  .nav-logo-break {
+    display: inline;
+  }
+  /* The row never wraps; if space ever runs out the wordmark folds first. */
+  .nav-links {
+    flex-wrap: nowrap;
+  }
+  .nav-cta {
+    padding: 0.6rem 0.75rem;
+  }
+  .nav-cta-label-full {
+    display: none;
+  }
+  .nav-cta-label-short {
+    display: inline;
+  }
+}
+
 /* Home hero */
 .hero {
   position: relative;
