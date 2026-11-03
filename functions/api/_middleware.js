@@ -30,12 +30,25 @@
 // isolate is evicted are lost without a marker, though — this is a traffic
 // log, not an audit trail.
 //
-// Privacy: no IP addresses and no request bodies are ever logged — only
-// coarse Cloudflare geo (country/region/city), the URL, and the user agent.
+// Privacy: no IP addresses and no request bodies are ever logged. A row holds
+// coarse Cloudflare geo (country/region/city), the path and query, the user
+// agent, the referer, and a daily-rotating keyed hash of ip|user-agent that
+// never stores the address (see visitorHash below).
 
 const LOG_TABLE_ID = 'tblwtk9Q0bfg8uAYG' // "API Log" table (not secret)
 
-const RETENTION_DAYS = 7 // keep modest: log rows share the base's record cap
+// How long log rows live. Rows cost records: at roughly 110 a day, 90 days
+// is about 10,000 rows against the base's record cap (50,000 on Airtable's
+// Team plan), which the Activities, Reports and Submissions tables share.
+// A full base rejects every new record: the public forms break, and so does
+// this purge, which only runs after a successful write (a whole year would
+// be about 40,000 rows, one traffic bump away from that). Airtable repeats
+// this number in the "Views (last 90 days)" field on Activities (its name
+// and description) and in the API Log table description, so change them
+// together. The Traffic Dashboard's dated sections carry their own 7- and
+// 30-day date filters (their "All" tab is simply every row the log still
+// holds), so they only need retention to stay at 30 days or more.
+const RETENTION_DAYS = 90
 const PURGE_PROBABILITY = 0.25 // chance a successful flush also prunes
 const PURGE_MAX_BATCHES = 3 // ≤3 delete calls × 10 rows = ≤30 rows per prune
 const PURGE_MIN_GAP_MS = 30000 // even with a backlog, prune at most this often per isolate
@@ -179,7 +192,8 @@ function buildFields(request, status, durationMs) {
     [F.likelyBot]: likelyBot,
   }
   // A person successfully viewed an activity page — link the row to that
-  // activity so its "Views (last 7 days)" count picks it up. The 200 check
+  // activity so its "Views (last 30 / 90 days)" counts pick it up (the 90-day
+  // count has no date condition; its window is RETENTION_DAYS). The 200 check
   // guarantees the record exists (the route just fetched it), so the link
   // can't make Airtable reject the batch.
   const activityView = url.pathname.match(ACTIVITY_PATH_RE)
