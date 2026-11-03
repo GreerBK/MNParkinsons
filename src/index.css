@@ -196,7 +196,6 @@ nav {
 /* Home hero */
 .hero {
   position: relative;
-  min-height: 420px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -252,7 +251,7 @@ nav {
 .hero-content {
   position: relative;
   z-index: 1;
-  padding: 4rem 1.25rem 3rem;
+  padding: 2.5rem 1.25rem 0.6rem;
   width: 100%;
 }
 .hero-eyebrow {
@@ -265,23 +264,79 @@ nav {
   text-transform: uppercase;
   padding: 0.35rem 0.9rem;
   border-radius: 100px;
-  margin-bottom: 1.5rem;
+  margin-bottom: 1rem;
 }
+/* 4.5vw capped at 3rem keeps the title on one line from roughly 600px up (at
+   3.5rem it wrapped to two lines, which was most of the hero's extra height). */
 .hero h1 {
   font-family: 'DM Serif Display', serif;
-  font-size: clamp(2.2rem, 5vw, 3.5rem);
+  font-size: clamp(2.2rem, 4.5vw, 3rem);
   line-height: 1.1;
-  margin-bottom: 1rem;
-  max-width: 700px;
+  margin-bottom: 0.75rem;
+  max-width: 780px;
   margin-left: auto;
   margin-right: auto;
 }
 .hero h1 em { color: var(--primary); font-style: italic; }
 .hero p {
-  color: var(--muted);
+  /* Slate 700: at least 5:1 over the hero backdrop, darkest video frames
+     included. --muted sat at about 4.2:1 on the gradient and lower on video. */
+  color: #334155;
   font-size: 1.1rem;
   max-width: 520px;
-  margin: 0 auto 2.5rem;
+  margin: 0 auto 1.5rem;
+}
+
+/* Scroll cue at the foot of the hero: "Or browse by category" beside a round
+   chevron, pointing at the category grid below. Set as a plain text button
+   rather than a caption so it reads as something to press; the darker green
+   keeps it above 4.5:1 over the video. The chevron nods twice on arrival and
+   then rests (nothing on the page should move for more than five seconds),
+   and not at all under reduced motion (see further down). */
+.hero-scroll {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  padding: 0.4rem 0.6rem 0.4rem 1rem;
+  min-height: 44px;
+  border-radius: 99px;
+  color: var(--primary-hover);
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.hero-scroll-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  color: var(--primary);
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  animation: heroNudge 2.4s ease-in-out 0.8s 2;
+}
+.hero-scroll-icon svg {
+  width: 20px;
+  height: 20px;
+}
+.hero-scroll:hover .hero-scroll-label {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.hero-scroll:hover .hero-scroll-icon,
+.hero-scroll:focus-visible .hero-scroll-icon {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--white);
+}
+@keyframes heroNudge {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(4px); }
 }
 
 /* Search box (hero – zip + location + search) */
@@ -291,12 +346,14 @@ nav {
   align-items: center;
   justify-content: center;
   gap: 0.6rem;
-  max-width: 440px;
+  max-width: 460px; /* zip + "Use my location" + Search on one row */
   margin: 0 auto;
   background: rgba(255, 255, 255, 0.95);
   backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.4);
-  border-radius: 99px;
+  /* Looks the same as 99px on one row; if the pill ever has to wrap, a 2rem
+     corner still clears the rounded ends of the buttons inside it. */
+  border-radius: 2rem;
   padding: 0.5rem 0.75rem;
   box-shadow: var(--shadow-lg);
 }
@@ -323,9 +380,17 @@ nav {
 .search-box .zip-input:focus {
   background: var(--bg);
 }
-.search-box .btn-loc,
-.search-box .btn-primary {
+.search-box .btn-loc {
   flex-shrink: 0;
+}
+/* Search takes whatever the row has left; if it ever has to drop to a row of
+   its own (very small phones) it goes full width instead of floating centred. */
+.search-box .btn-primary {
+  flex: 1 1 auto;
+  min-width: 6rem;
+}
+.btn-loc-label-short {
+  display: none;
 }
 .search-box .loc-error {
   flex-basis: 100%;
@@ -400,6 +465,46 @@ nav {
   color: #b91c1c;
   margin-left: 0.15rem;
   white-space: nowrap;
+}
+
+/* Phones: tighter hero, and the search pill keeps zip, location and Search on
+   one row by shortening the location label to "Near me" and letting the zip
+   field take the remaining width. */
+@media (max-width: 479px) {
+  .hero-content {
+    padding: 2rem 1.25rem 0.6rem;
+  }
+  .hero p {
+    font-size: 1rem;
+    margin-bottom: 1.25rem;
+  }
+  .search-box {
+    gap: 0.5rem;
+    padding: 0.5rem;
+  }
+  .search-box .zip-input {
+    flex: 1 1 5rem;
+    width: auto;
+    padding-left: 0.35rem;
+    padding-right: 0.35rem;
+  }
+  .search-box .btn-loc {
+    padding-left: 0.7rem;
+    padding-right: 0.7rem;
+  }
+  .search-box .btn-loc-label-full {
+    display: none;
+  }
+  .search-box .btn-loc-label-short {
+    display: inline;
+  }
+  /* A slimmer Search floor, so the row also holds on 360px phones while the
+     location button briefly reads "Locating…" (wider than "Near me"). */
+  .search-box .btn-primary {
+    min-width: 5.25rem;
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
 }
 
 /* Categories */
@@ -1067,7 +1172,8 @@ footer .footer-line a { color: #b8ccab; }
   /* Disable keyframe animations */
   .disclaimer-modal,
   .spinner,
-  .btn-loc-spinner {
+  .btn-loc-spinner,
+  .hero-scroll-icon {
     animation: none !important;
   }
   /* Static "loading" marker (no spin) — keep visible without motion */
@@ -1634,6 +1740,7 @@ footer .footer-line a { color: #b8ccab; }
   .hero-video,
   .hero-overlay,
   .hero-video-toggle,
+  .hero-scroll,
   .report-section,
   footer {
     display: none !important;
