@@ -9,6 +9,20 @@ const BROWSER_CACHE_SECONDS = 60
 const notFound = () =>
   Response.json({ error: 'Activity not found' }, { status: 404, headers: { 'Cache-Control': 'no-store' } })
 
+// Activities fields that exist for Airtable-side bookkeeping only and must
+// not reach the browser: the links to traffic-log rows (one record ID per
+// logged page view, so the array grows with the log's retention), the links
+// to visitor reports, and the per-activity view counts. The site never reads
+// them. The same rule lives in functions/api/activities.js — keep the two in step.
+const INTERNAL_FIELDS = ['API Log', 'Reports']
+function publicRecord(record) {
+  const fields = { ...(record.fields || {}) }
+  for (const name of Object.keys(fields)) {
+    if (INTERNAL_FIELDS.includes(name) || name.startsWith('Views (')) delete fields[name]
+  }
+  return { ...record, fields }
+}
+
 export async function onRequestGet(context) {
   const { env, params, request } = context
   const pat = env.AIRTABLE_PAT
@@ -54,7 +68,7 @@ export async function onRequestGet(context) {
   // here so direct links can't surface Pending/Inactive rows.
   if (record?.fields?.['Status'] !== 'Active') return notFound()
 
-  const response = Response.json(record, {
+  const response = Response.json(publicRecord(record), {
     headers: {
       'Content-Type': 'application/json',
       'X-Content-Type-Options': 'nosniff',
