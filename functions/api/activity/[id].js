@@ -1,7 +1,4 @@
-// Airtable record IDs are "rec" + 14–17 alphanumerics. Validating the shape
-// before building the upstream URL prevents crafted IDs (e.g. encoded "../")
-// from steering the authenticated request at other Airtable API endpoints.
-const RECORD_ID_RE = /^rec[a-zA-Z0-9]{14,17}$/
+import { activityPage, isActivityId } from '../../_shared/activity-records.js'
 
 const EDGE_CACHE_SECONDS = 300
 const BROWSER_CACHE_SECONDS = 60
@@ -10,49 +7,41 @@ const notFound = () =>
   Response.json({ error: 'Activity not found' }, { status: 404, headers: { 'Cache-Control': 'no-store' } })
 
 export async function onRequestGet(context) {
-  const { env, params, request } = context
-  const pat = env.AIRTABLE_PAT
-  const baseId = env.AIRTABLE_BASE_ID
-  const tableId = env.AIRTABLE_TABLE_ID
-
-  if (!pat) return Response.json({ error: 'Server configuration error' }, { status: 500, headers: { 'Cache-Control': 'no-store' } })
+  const { env, params } = context
+  if (!env.AIRTABLE_PAT || !env.AIRTABLE_BASE_ID || !env.AIRTABLE_TABLE_ID) {
+    return Response.json({ error: 'Server configuration error' }, { status: 500, headers: { 'Cache-Control': 'no-store' } })
+  }
 
   const id = String(params.id || '')
-  if (!RECORD_ID_RE.test(id)) return notFound()
+  if (!isActivityId(id)) return notFound()
 
   // Serve repeat views of the same activity from the edge cache.
+  const cacheKey = new Request(
+    `https://edge-cache.internal/public-activity/v2/${env.AIRTABLE_BASE_ID}/${env.AIRTABLE_TABLE_ID}/${id}`
+  )
   let cache = null
   try {
     cache = caches.default
-    const hit = await cache.match(request)
+    const hit = await cache.match(cacheKey)
     if (hit) return hit
   } catch {
     cache = null
   }
 
-  let res
+  let record
   try {
-    res = await fetch(`https://api.airtable.com/v0/${baseId}/${tableId}/${id}`, {
-      headers: { Authorization: `Bearer ${pat}` },
-    })
-  } catch {
+    const { records } = await activityPage(env, { id })
+    record = records[0]
+  } catch (error) {
+    const busy = error.status === 429 || error.status === 503
+    const headers = { 'Cache-Control': 'no-store' }
+    if (busy) headers['Retry-After'] = error.retryAfter || '30'
     return Response.json(
       { error: 'Could not reach the activity database. Please try again shortly.' },
-      { status: 502, headers: { 'Cache-Control': 'no-store' } }
+      { status: busy ? 503 : 502, headers }
     )
   }
-  if (res.status === 404 || res.status === 403) return notFound()
-  if (!res.ok) {
-    return Response.json(
-      { error: 'Could not reach the activity database. Please try again shortly.' },
-      { status: 502, headers: { 'Cache-Control': 'no-store' } }
-    )
-  }
-
-  const record = await res.json()
-  // The list endpoint only ever exposes Active records — apply the same rule
-  // here so direct links can't surface Pending/Inactive rows.
-  if (record?.fields?.['Status'] !== 'Active') return notFound()
+  if (!record) return notFound()
 
   const response = Response.json(record, {
     headers: {
@@ -63,7 +52,7 @@ export async function onRequestGet(context) {
   })
 
   if (cache) {
-    const put = cache.put(request, response.clone()).catch(() => {})
+    const put = cache.put(cacheKey, response.clone()).catch(() => {})
     if (context.waitUntil) context.waitUntil(put)
     else await put
   }

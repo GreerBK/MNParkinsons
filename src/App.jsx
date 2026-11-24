@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import MN_ZIP_COORDS from './mnZipCoords'
+import { centralCalendarDate, getActivityWeekdays, isDateOnly, isEventsType, parseWeeklySchedule } from './activitySchedule.js'
+import { isBareEmail, normalizeWebUrl, parseRegistrationLink } from './registrationLinks.js'
 
 // ─────────────────────────────────────────────
 // CONFIG
@@ -12,57 +14,12 @@ const LOCATIONIQ_KEY   = import.meta.env.VITE_LOCATIONIQ_KEY || '' // optional: 
 const DATE_EPOCH_YMD = '1970-01-01'
 const DATE_INFINITY_YMD = '9999-12-31'
 
-function pad2(n) {
-  return String(n).padStart(2, '0')
-}
-
-// Use local-date (not UTC) so "today between X and Y" behaves as humans expect.
-function toLocalYMD(d) {
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
-}
-
 function parseAirtableDateToYMD(raw) {
-  if (raw == null || raw === '') return null
-  // Airtable date fields arrive as plain "YYYY-MM-DD". Keep them as they are:
-  // new Date("2026-10-09") means UTC midnight, which is still the previous
-  // evening in Minnesota, so every listing used to appear and expire a day
-  // early for the people the site is for.
-  if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw
+  if (!raw) return null
+  if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw)) return isDateOnly(raw) ? raw : null
   const d = raw instanceof Date ? raw : new Date(raw)
   if (Number.isNaN(d.getTime())) return null
-  return toLocalYMD(d)
-}
-
-function findDateFieldKey(fields, kind /* 'start' | 'end' */) {
-  const entries = Object.keys(fields || {})
-  const preferred = entries.find(k => {
-    const kl = k.toLowerCase()
-    if (!kl.includes(kind)) return false
-    return /\bdate\b/i.test(k)
-  })
-  if (preferred) return preferred
-  return entries.find(k => new RegExp(`\\b${kind}\\b`, 'i').test(k))
-}
-
-function extractStartEndYMD(fields) {
-  const startKey = findDateFieldKey(fields, 'start')
-  const endKey = findDateFieldKey(fields, 'end')
-  const startDateYMD = parseAirtableDateToYMD(startKey ? fields[startKey] : null) || DATE_EPOCH_YMD
-  const endDateYMD = parseAirtableDateToYMD(endKey ? fields[endKey] : null) || DATE_INFINITY_YMD
-  return { startDateYMD, endDateYMD }
-}
-
-function getFieldValue(fields, candidateNames) {
-  if (!fields) return ''
-  for (const name of (candidateNames || [])) {
-    if (name in fields) return fields[name]
-  }
-  const entries = Object.keys(fields)
-  const norm = (s) => String(s || '').trim().toLowerCase()
-  const wanted = new Set((candidateNames || []).map(norm).filter(Boolean))
-  if (!wanted.size) return ''
-  const key = entries.find(k => wanted.has(norm(k)))
-  return key ? fields[key] : ''
+  return centralCalendarDate(d)
 }
 
 function isActiveOnToday(activity, todayYMD) {
@@ -72,8 +29,7 @@ function isActiveOnToday(activity, todayYMD) {
   // An event is listed from the moment it is entered until it is over: the
   // whole point of an upcoming event is that people see it ahead of time.
   if (isEventActivity(activity)) {
-    const lastDay = activity.hasEndDate ? end : activity.hasStartDate ? start : DATE_INFINITY_YMD
-    return todayYMD <= lastDay
+    return activity.hasStartDate && todayYMD <= (activity.hasEndDate ? end : start)
   }
   return todayYMD >= start && todayYMD <= end
 }
@@ -86,8 +42,7 @@ function isActiveOnToday(activity, todayYMD) {
 // matched exactly so a hypothetical "Special Events" type is not swept in.
 // ─────────────────────────────────────────────
 function isEventActivity(a) {
-  const types = Array.isArray(a?.type) ? a.type : a?.type ? [a.type] : []
-  return types.some(t => String(t).trim().toLowerCase() === 'events')
+  return isEventsType(a?.type)
 }
 
 // True when a results list is filtered to Events and nothing else, which is
@@ -98,16 +53,15 @@ function isEventsOnlyFilter(types) {
 }
 
 // The "Browse all activities" link on an empty events list keeps the
-// person's location (zip, or lat/lng/distance) and drops only the filters,
-// the same as "Clear all filters" does.
+// person's location and distance while removing the other filters.
 function browseAllHref(params) {
   const keep = new URLSearchParams()
   if (params.get('zip')) keep.set('zip', params.get('zip'))
   else if (params.get('lat') && params.get('lng')) {
     keep.set('lat', params.get('lat'))
     keep.set('lng', params.get('lng'))
-    if (params.get('distance')) keep.set('distance', params.get('distance'))
   }
+  if (keep.toString() && params.get('distance')) keep.set('distance', params.get('distance'))
   const qs = keep.toString()
   return `#/search${qs ? `?${qs}` : ''}`
 }
@@ -117,7 +71,7 @@ const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', '
 
 function ymdParts(ymd) {
   const [y, m, d] = String(ymd).split('-').map(Number)
-  return { y, m, d, weekday: WEEKDAY_NAMES[new Date(y, m - 1, d).getDay()] }
+  return { y, m, d, weekday: WEEKDAY_NAMES[new Date(ymd).getUTCDay()] }
 }
 
 // Spells out an event's date the way a person would say it. One day:
@@ -128,7 +82,7 @@ function ymdParts(ymd) {
 // than a dash so screen readers and older eyes get the same sentence.
 function formatEventDate(startYMD, endYMD, { withYear = false, longRange = false } = {}) {
   if (!startYMD && !endYMD) return ''
-  const thisYear = new Date().getFullYear()
+  const thisYear = Number(centralCalendarDate().slice(0, 4))
   const yearTail = (y) => (withYear || y !== thisYear ? `, ${y}` : '')
   const monthDay = (p) => `${MONTH_NAMES[p.m - 1]} ${p.d}`
   if (!startYMD) {
@@ -189,9 +143,9 @@ function normalizeDisplayName(name) {
 
 function mapRecord(record) {
   const f = record.fields || {}
-  const { startDateYMD, endDateYMD } = extractStartEndYMD(f)
+  const startDateYMD = parseAirtableDateToYMD(f['Start Date'])
+  const endDateYMD = parseAirtableDateToYMD(f['End Date'])
   const typeRaw = f['Activity Type']
-  const daysRaw = f['Days of Week']
   const intensityRaw = f['Intensity']
   return {
     id:               record.id,
@@ -203,8 +157,7 @@ function mapRecord(record) {
     format:           f['Virtual/In-Person/Hybrid'] || 'In-Person',
     schedule:         String(f['Schedule'] || '').trim(),
     // Always display days Monday→Sunday regardless of the chip order stored in Airtable
-    daysOfWeek:       (Array.isArray(daysRaw) ? daysRaw : String(daysRaw || '').split(/[,;]/))
-                        .map(d => String(d).trim()).filter(Boolean)
+    daysOfWeek:       getActivityWeekdays(f)
                         .sort(compareByOrder(WEEKDAY_ORDER)).join(', '),
     timeOfDay:        f['Time of Day']            || '',
     intensity:        Array.isArray(intensityRaw) ? intensityRaw.join(', ') : (intensityRaw ? String(intensityRaw).trim() : ''),
@@ -223,35 +176,30 @@ function mapRecord(record) {
     lat:              (() => { const v = f['Latitude']; const n = parseFloat(v); return v != null && !isNaN(n) ? n : null })(),
     lng:              (() => { const v = f['Longitude']; const n = parseFloat(v); return v != null && !isNaN(n) ? n : null })(),
     emoji:            f['Emoji']                   || '',
-    startDateYMD,
-    endDateYMD,
-    hasStartDate:     startDateYMD !== DATE_EPOCH_YMD,
-    hasEndDate:       endDateYMD !== DATE_INFINITY_YMD,
+    startDateYMD:     startDateYMD || DATE_EPOCH_YMD,
+    endDateYMD:       endDateYMD || DATE_INFINITY_YMD,
+    hasStartDate:     !!startDateYMD,
+    hasEndDate:       !!endDateYMD,
   }
 }
 
-async function fetchActivities(filters = {}) {
+async function fetchActivities(filters = {}, signal) {
   const arr = (v) => (Array.isArray(v) ? v : v ? [v] : [])
-  const params = new URLSearchParams()
+  const params = new URLSearchParams({ v: '2' })
   if (filters.q) params.set('q', String(filters.q).trim())
   arr(filters.type).forEach(t => params.append('type', t))
   arr(filters.intensity).forEach(i => params.append('intensity', i))
   arr(filters.cost).forEach(c => params.append('cost', c))
   arr(filters.format).forEach(f => params.append('format', f))
   arr(filters.daysOfWeek).forEach(d => params.append('daysOfWeek', d))
-  // Distance filtering happens client-side below, but sending the searched
-  // zip lets the server-side traffic log count where people search from.
-  // Only well-formed 5-digit zips are sent; coordinates never are.
-  const zipForLog = filters.zip ? String(filters.zip).trim() : ''
-  if (/^\d{5}$/.test(zipForLog)) params.set('zip', zipForLog)
 
-  const res = await fetch(`/api/activities?${params}`)
+  const res = await fetch(`/api/activities?${params}`, { signal })
   if (!res.ok) throw new Error(`Airtable error: ${res.status}`)
   const { records } = await res.json()
 
   let activities = records.map(mapRecord)
-  // Only show records whose date-range includes "today".
-  const todayYMD = toLocalYMD(new Date())
+  // Check availability against the calendar day in Minnesota.
+  const todayYMD = centralCalendarDate()
   activities = activities.filter(a => isActiveOnToday(a, todayYMD))
 
   // For activities missing lat/lng, try to derive coordinates from their zip code
@@ -264,16 +212,13 @@ async function fetchActivities(filters = {}) {
     return a
   })
 
-  const zipRaw = filters.zip ? String(filters.zip).trim() : ''
-  const zipValid = /^\d{5}$/.test(zipRaw)
-  let center = filters.coords || null
-  if (!center && zipValid) center = await getZipCoords(zipRaw)
+  const center = filters.coords || null
 
   if (center) {
     activities = activities
       .map(a => ({
         ...a,
-        dist: a.lat && a.lng ? haversine(center[0], center[1], a.lat, a.lng) : null
+        dist: a.format !== 'Virtual' && a.lat && a.lng ? haversine(center[0], center[1], a.lat, a.lng) : null
       }))
       .sort((a, b) => {
         // Activities with distance sort first, then those without
@@ -286,12 +231,7 @@ async function fetchActivities(filters = {}) {
 
   const maxMiles = filters.maxDistance != null && Number(filters.maxDistance) > 0 ? Number(filters.maxDistance) : null
   if (maxMiles != null && center) {
-    activities = activities.filter(a => {
-      // Keep activities without coordinates (virtual, or missing data) — don't silently drop them
-      if (!a.lat || !a.lng) return a.format === 'Virtual'
-      const d = a.dist ?? haversine(center[0], center[1], a.lat, a.lng)
-      return d <= maxMiles
-    })
+    activities = activities.filter(a => a.format === 'Virtual' || (a.dist != null && a.dist <= maxMiles))
   }
 
   // Without a location to sort by distance, fall back to a stable A→Z order
@@ -300,11 +240,10 @@ async function fetchActivities(filters = {}) {
     activities.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
   }
 
-  // An "Events only" list reads like a calendar: soonest first, undated last.
+  // An "Events only" list reads like a calendar, with the soonest first.
   // The sort is stable, so the distance or name order above breaks ties.
   if (isEventsOnlyFilter(arr(filters.type))) {
-    const when = a => (a.hasStartDate ? a.startDateYMD : a.hasEndDate ? a.endDateYMD : DATE_INFINITY_YMD)
-    activities.sort((a, b) => when(a).localeCompare(when(b)))
+    activities.sort((a, b) => a.startDateYMD.localeCompare(b.startDateYMD))
   }
 
   return activities
@@ -324,11 +263,11 @@ function fetchCatalog() {
   return catalogPromise
 }
 
-async function fetchActivityById(id) {
-  const res = await fetch(`/api/activity/${encodeURIComponent(id)}`)
+async function fetchActivityById(id, signal) {
+  const res = await fetch(`/api/activity/${encodeURIComponent(id)}?v=2`, { signal })
   if (!res.ok) throw new Error('Activity not found')
   const activity = mapRecord(await res.json())
-  const todayYMD = toLocalYMD(new Date())
+  const todayYMD = centralCalendarDate()
   if (isActiveOnToday(activity, todayYMD)) return activity
   // Outside its dates. Hand the page enough to explain itself: old flyer
   // links and search results for a finished event keep landing here, and a
@@ -340,15 +279,15 @@ async function fetchActivityById(id) {
   return {
     ...activity,
     hidden: true,
-    pastEvent: isEvent && datesInOrder,
+    pastEvent: isEvent && activity.hasStartDate && datesInOrder,
     notYetStarted: !isEvent && datesInOrder && activity.hasStartDate && todayYMD < activity.startDateYMD,
   }
 }
 
 
-async function fetchFilterOptionsFromSchema() {
+async function fetchFilterOptionsFromSchema(purpose) {
   try {
-    const res = await fetch('/api/filter-options')
+    const res = await fetch(purpose === 'submit' ? '/api/filter-options?purpose=submit' : '/api/filter-options')
     if (!res.ok) return null
     return await res.json()
   } catch {
@@ -394,7 +333,7 @@ function normalizeZip(zip) {
 // One geocode call: user's zip → lat/lng. Uses local lookup table first, then
 // external APIs as fallback for zips not in the table.
 const zipCoordsCache = {}
-async function getZipCoords(zip) {
+async function getZipCoords(zip, signal) {
   const z = normalizeZip(zip)
   if (!z) return null
   if (zipCoordsCache[z]) return zipCoordsCache[z]
@@ -407,30 +346,35 @@ async function getZipCoords(zip) {
 
   // Fallback: try Zippopotam.us
   try {
-    const res = await fetch(`https://api.zippopotam.us/us/${z}`)
+    const res = await fetch(`https://api.zippopotam.us/us/${z}`, { signal })
     if (res.ok) {
       const data = await res.json()
       const place = data.places?.[0]
       if (place) {
         const coords = [parseFloat(place.latitude), parseFloat(place.longitude)]
-        zipCoordsCache[z] = coords
-        return coords
+        if (coords.every(Number.isFinite)) {
+          zipCoordsCache[z] = coords
+          return coords
+        }
       }
     }
   } catch (_) {}
 
   // Fallback: LocationIQ if key is set
-  if (LOCATIONIQ_KEY) {
+  if (LOCATIONIQ_KEY && !signal?.aborted) {
     try {
       const res = await fetch(
-        `https://us1.locationiq.com/v1/search?key=${encodeURIComponent(LOCATIONIQ_KEY)}&q=${encodeURIComponent(z + ', USA')}&format=json&limit=1`
+        `https://us1.locationiq.com/v1/search?key=${encodeURIComponent(LOCATIONIQ_KEY)}&q=${encodeURIComponent(z + ', USA')}&format=json&limit=1`,
+        { signal }
       )
       if (res.ok) {
         const data = await res.json()
         if (data?.[0]) {
           const coords = [parseFloat(data[0].lat), parseFloat(data[0].lon)]
-          zipCoordsCache[z] = coords
-          return coords
+          if (coords.every(Number.isFinite)) {
+            zipCoordsCache[z] = coords
+            return coords
+          }
         }
       }
     } catch (_) {}
@@ -443,7 +387,7 @@ function useUserLocation() {
   const [coords, setCoords] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
-  const requestLocation = useCallback(() => {
+  const requestLocation = useCallback(onFound => {
     if (!navigator.geolocation) {
       setError('Geolocation not supported')
       return
@@ -452,8 +396,10 @@ function useUserLocation() {
     setError(null)
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        setCoords([pos.coords.latitude, pos.coords.longitude])
+        const next = [pos.coords.latitude, pos.coords.longitude]
+        setCoords(next)
         setLoading(false)
+        if (typeof onFound === 'function') onFound(next)
       },
       (err) => {
         setError(err.code === 1 ? 'Location permission denied' : 'Could not get location')
@@ -478,13 +424,24 @@ function useRoute() {
   return hash
 }
 
-function navigate(path) {
-  window.location.hash = path
+function navigate(path, state) {
+  if (!state) {
+    window.location.hash = path
+    return
+  }
+  window.history.pushState(state, '', path)
+  window.dispatchEvent(new HashChangeEvent('hashchange'))
+}
+
+function isPlainLinkClick(event) {
+  return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey
 }
 
 function parseHash(hash) {
-  const [path, qs] = hash.replace('#', '').split('?')
-  const params = new URLSearchParams(qs || '')
+  const hashPath = hash.replace(/^#/, '')
+  const queryStart = hashPath.indexOf('?')
+  const path = queryStart < 0 ? hashPath : hashPath.slice(0, queryStart)
+  const params = new URLSearchParams(queryStart < 0 ? '' : hashPath.slice(queryStart + 1))
   return { path: path || '/', params }
 }
 
@@ -583,72 +540,6 @@ function splitPhones(raw) {
   return out
 }
 
-// Parse messy schedule text like "Tuesdays: 10-11 AM;6-7 PM ;Thursdays: 10-11"
-// into [{day:'Tuesday', times:['10-11 AM','6-7 PM']}, ...]. Returns null if
-// no day names found — caller should fall back to displaying raw text.
-const DAY_NAME_MAP = {
-  mon: 'Monday', monday: 'Monday',
-  tue: 'Tuesday', tues: 'Tuesday', tuesday: 'Tuesday',
-  wed: 'Wednesday', wednesday: 'Wednesday',
-  thu: 'Thursday', thur: 'Thursday', thurs: 'Thursday', thursday: 'Thursday',
-  fri: 'Friday', friday: 'Friday',
-  sat: 'Saturday', saturday: 'Saturday',
-  sun: 'Sunday', sunday: 'Sunday',
-}
-function parseSchedule(raw) {
-  const text = String(raw || '').trim()
-  if (!text) return null
-  // Bail on non-weekly patterns ("1st and 3rd Tuesdays every month",
-  // "Third Thursday of odd months", "2nd Friday of the month",
-  // "every other Wednesday", "biweekly").
-  // The day-grid view assumes a weekly recurrence — for monthly or
-  // alternating schedules we let the caller fall back to showing the
-  // raw text intact, which preserves the full intent.
-  if (
-    /\b(1st|2nd|3rd|4th|5th)\b/i.test(text) ||
-    /\b(first|second|third|fourth|fifth|last)\b/i.test(text) ||
-    /\b(biweekly|bi-weekly|month(s|ly)?)\b/i.test(text) ||
-    /\bevery other\b/i.test(text)
-  ) return null
-  const dayRe = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tues|thurs|thur|mon|tue|wed|thu|fri|sat|sun)s?\b/gi
-  const matches = []
-  let m
-  while ((m = dayRe.exec(text)) !== null) {
-    matches.push({ stem: m[1].toLowerCase(), index: m.index, len: m[0].length })
-  }
-  if (matches.length === 0) return null
-  const groups = []
-  for (let i = 0; i < matches.length; i++) {
-    const start = matches[i].index + matches[i].len
-    const end = i + 1 < matches.length ? matches[i + 1].index : text.length
-    const chunk = text.slice(start, end).replace(/^[\s:,&\-–—]+|[\s:,&\-–—]+$/g, '')
-    const times = chunk
-      .split(/[;,]+/)
-      .map(s => s.trim())
-      .filter(s => s && /\d/.test(s))
-    groups.push({ day: DAY_NAME_MAP[matches[i].stem] || matches[i].stem, times })
-  }
-  // Merge consecutive entries for the same day
-  const merged = []
-  for (const g of groups) {
-    const last = merged[merged.length - 1]
-    if (last && last.day === g.day) last.times.push(...g.times)
-    else merged.push({ day: g.day, times: [...g.times] })
-  }
-  // Backfill empty time slots from the next group (handles "Mon, Wed, Fri: 9AM")
-  for (let i = merged.length - 2; i >= 0; i--) {
-    if (merged[i].times.length === 0) {
-      for (let j = i + 1; j < merged.length; j++) {
-        if (merged[j].times.length > 0) {
-          merged[i].times = [...merged[j].times]
-          break
-        }
-      }
-    }
-  }
-  return merged
-}
-
 // "https://www.example.com/some/path?x=1" → "example.com"
 function getDisplayDomain(url) {
   try {
@@ -656,22 +547,6 @@ function getDisplayDomain(url) {
     return u.hostname.replace(/^www\./, '')
   } catch {
     return String(url || '')
-  }
-}
-
-// Returns a safe https URL or null. Prevents javascript: and other unsafe
-// schemes, and rejects URLs with embedded credentials: a bare email like
-// "person@example.com" would otherwise parse as user "person" on host
-// "example.com" and produce a link to the wrong place entirely.
-function safeHttpUrl(raw) {
-  const s = String(raw || '').trim()
-  if (!s) return null
-  try {
-    const u = new URL(s.startsWith('http') ? s : `https://${s}`)
-    if (u.username || u.password) return null
-    return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : null
-  } catch {
-    return null
   }
 }
 
@@ -1211,7 +1086,8 @@ function Home() {
             className="zip-input"
             type="text"
             inputMode="numeric"
-            pattern="\d*"
+            pattern="[0-9]{5}"
+            title="Enter a five-digit ZIP code"
             placeholder="Zip Code"
             autoComplete="postal-code"
             value={zip}
@@ -1416,96 +1292,109 @@ function FilterGroupMulti({ title, options, value, onChange, initialVisible = 6 
   )
 }
 
+function searchCoordinates(params) {
+  const rawLat = params.get('lat')
+  const rawLng = params.get('lng')
+  if (!rawLat?.trim() || !rawLng?.trim()) return null
+  const lat = Number(rawLat)
+  const lng = Number(rawLng)
+  return Math.abs(lat) <= 90 && Math.abs(lng) <= 180 ? [lat, lng] : null
+}
+
+function searchDistance(params) {
+  const value = Number(params.get('distance'))
+  return value >= DISTANCE_MIN && value <= DISTANCE_MAX ? value : DISTANCE_DEFAULT
+}
+
 function SearchResults({ params }) {
   const [activities, setActivities] = useState([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [error, setError] = useState(false)
+  const [retry, setRetry] = useState(0)
+  const [locationResult, setLocationResult] = useState(null)
   const [filterOptions, setFilterOptions] = useState(EMPTY_FILTER_OPTIONS)
   const [showFilters, setShowFilters] = useState(false)
-  const { coords: userCoords, loading: locLoading, error: locError, requestLocation } = useUserLocation()
+  const { loading: locLoading, error: locError, requestLocation } = useUserLocation()
 
-  // filter state (multi-select as arrays)
-  const [q, setQ] = useState(params.get('q') || '')
-  const [zip, setZip] = useState((params.get('zip') || '').trim())
-  // Hidden values are scrubbed so stale bookmarked URLs (?type=Exercise, ?intensity=Heavy)
-  // can't apply a filter the sidebar no longer offers a checkbox for
-  const [selType, setSelType] = useState(withoutHidden(paramToArray(params.get('type')), HIDDEN_ACTIVITY_TYPES))
-  const [selIntensity, setSelIntensity] = useState(withoutHidden(paramToArray(params.get('intensity')), HIDDEN_INTENSITIES))
-  const [selCost, setSelCost] = useState(paramToArray(params.get('cost')))
-  const [selFormat, setSelFormat] = useState(paramToArray(params.get('format')))
-  const [selDays, setSelDays] = useState(paramToArray(params.get('days')))
-  const [maxDistance, setMaxDistance] = useState(() => {
-    const d = params.get('distance')
-    const n = Number(d)
-    if (d != null && !isNaN(n) && n >= DISTANCE_MIN && n <= DISTANCE_MAX) return n
-    return (params.get('zip') || params.get('lat')) ? DISTANCE_DEFAULT : null
-  })
+  const queryString = params.toString()
+  const urlQ = params.get('q') || ''
+  const urlZip = (params.get('zip') || '').trim()
+  const urlCoords = urlZip ? null : searchCoordinates(params)
+  const urlDistance = searchDistance(params)
+  const [q, setQ] = useState(urlQ)
+  const [zip, setZip] = useState(urlZip)
+  const [maxDistance, setMaxDistance] = useState(urlDistance)
+  const [zipInputError, setZipInputError] = useState(false)
+  const zipEdited = useRef(false)
+  const locationIntent = useRef(0)
+  const draftTimer = useRef(null)
+  const applyLatest = useRef(null)
+  const filtersToggleRef = useRef(null)
 
-  const load = useCallback(async () => {
+  const selType = withoutHidden(paramToArray(params.get('type')), HIDDEN_ACTIVITY_TYPES)
+  const selIntensity = withoutHidden(paramToArray(params.get('intensity')), HIDDEN_INTENSITIES)
+  const selCost = paramToArray(params.get('cost'))
+  const selFormat = paramToArray(params.get('format'))
+  const selDays = paramToArray(params.get('days'))
+  const eventsOnly = isEventsOnlyFilter(selType)
+
+  useEffect(() => { setQ(urlQ) }, [urlQ])
+  useEffect(() => {
+    setZip(urlZip)
+    setZipInputError(false)
+    zipEdited.current = false
+  }, [urlZip])
+  useEffect(() => { setMaxDistance(urlDistance) }, [urlDistance])
+  useEffect(() => () => clearTimeout(draftTimer.current), [queryString])
+  useEffect(() => () => { ++locationIntent.current }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const { signal } = controller
     setLoading(true)
-    setError(null)
-    try {
-      const typeParam = params.get('type')
-      const intensityParam = params.get('intensity')
-      const costParam = params.get('cost')
-      const formatParam = params.get('format')
-      const daysParam = params.get('days')
-      const zipParam = normalizeZip(params.get('zip')) || undefined
-      const latP = params.get('lat')
-      const lngP = params.get('lng')
-      const coordsFromUrl = (latP != null && lngP != null) ? (() => {
-        const a = parseFloat(latP)
-        const b = parseFloat(lngP)
-        return (!isNaN(a) && !isNaN(b)) ? [a, b] : null
-      })() : null
-      const coords = userCoords || coordsFromUrl
-      const hasLocation = zipParam || coords
+    setError(false)
+
+    const load = async () => {
+      let coords = urlCoords
+      if (urlZip) {
+        const lookup = new AbortController()
+        const abortLookup = () => lookup.abort()
+        signal.addEventListener('abort', abortLookup, { once: true })
+        const timeout = setTimeout(abortLookup, 5000)
+        try {
+          coords = await getZipCoords(urlZip, lookup.signal)
+        } finally {
+          clearTimeout(timeout)
+          signal.removeEventListener('abort', abortLookup)
+        }
+      }
+      if (signal.aborted) return
       const data = await fetchActivities({
-        q: params.get('q') || undefined,
-        zip: zipParam,
-        coords: coords || undefined,
-        type: typeParam ? withoutHidden(paramToArray(typeParam), HIDDEN_ACTIVITY_TYPES) : undefined,
-        intensity: intensityParam ? withoutHidden(paramToArray(intensityParam), HIDDEN_INTENSITIES) : undefined,
-        cost: costParam ? paramToArray(costParam) : undefined,
-        format: formatParam ? paramToArray(formatParam) : undefined,
-        daysOfWeek: daysParam ? paramToArray(daysParam) : undefined,
-        maxDistance: params.get('distance') ? Number(params.get('distance')) : (hasLocation ? DISTANCE_DEFAULT : undefined),
-      })
+        q: urlQ,
+        coords,
+        type: selType,
+        intensity: selIntensity,
+        cost: selCost,
+        format: selFormat,
+        daysOfWeek: selDays,
+        maxDistance: coords ? urlDistance : null,
+      }, signal)
+      if (signal.aborted) return
       setActivities(data)
-    } catch(e) {
-      setError(e.message)
-    } finally {
-      setLoading(false)
+      setLocationResult({ matched: !!coords, zip: urlZip, distance: urlDistance })
     }
-  }, [params.toString(), userCoords?.join(',')])
 
-  useEffect(() => { load() }, [load])
+    load()
+      .catch(() => { if (!signal.aborted) setError(true) })
+      .finally(() => { if (!signal.aborted) setLoading(false) })
+    return () => controller.abort()
+  }, [queryString, retry])
 
-  // Full catalog (ignores URL filters) so filter checklists always list every activity type / option,
-  // not only values present in the current filtered result set.
+  // Full catalog and schema keep options visible even when filters exclude them.
   useEffect(() => {
     let cancelled = false
-    fetchCatalog()
-      .then(acts => {
-        if (cancelled) return
-        const derived = deriveFilterOptionsFromActivities(acts)
-        setFilterOptions(prev => ({
-          activityType: unionActivityTypes(derived.activityType, prev.activityType, DEFAULT_FILTER_OPTIONS.activityType),
-          intensity: unionIntensities(derived.intensity, prev.intensity, DEFAULT_FILTER_OPTIONS.intensity),
-          cost: unionSortedStrings(derived.cost, prev.cost, DEFAULT_FILTER_OPTIONS.cost),
-          format: unionSortedStrings(derived.format, prev.format, DEFAULT_FILTER_OPTIONS.format),
-          daysOfWeek: unionDaysOfWeek(derived.daysOfWeek, prev.daysOfWeek, DEFAULT_FILTER_OPTIONS.daysOfWeek),
-        }))
-      })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [])
-
-  // Fetch filter options from Airtable schema once on mount (PAT may need schema.bases:read scope).
-  // Union with record-derived lists so select fields stay complete.
-  useEffect(() => {
-    fetchFilterOptionsFromSchema().then(opts => {
-      if (!opts) return
+    const merge = opts => {
+      if (cancelled || !opts) return
       setFilterOptions(prev => ({
         activityType: unionActivityTypes(opts.activityType, prev.activityType),
         intensity: unionIntensities(opts.intensity, prev.intensity),
@@ -1513,136 +1402,98 @@ function SearchResults({ params }) {
         format: unionSortedStrings(opts.format, prev.format),
         daysOfWeek: unionDaysOfWeek(opts.daysOfWeek, prev.daysOfWeek),
       }))
-    })
+    }
+    fetchCatalog().then(acts => merge(deriveFilterOptionsFromActivities(acts))).catch(() => {})
+    fetchFilterOptionsFromSchema().then(merge)
+    return () => { cancelled = true }
   }, [])
 
-  // Sync local filter state from URL when params change (e.g. after Apply or shared link)
-  useEffect(() => {
-    setQ(params.get('q') || '')
-    setZip((params.get('zip') || '').trim())
-    setSelType(withoutHidden(paramToArray(params.get('type')), HIDDEN_ACTIVITY_TYPES))
-    setSelIntensity(withoutHidden(paramToArray(params.get('intensity')), HIDDEN_INTENSITIES))
-    setSelCost(paramToArray(params.get('cost')))
-    setSelFormat(paramToArray(params.get('format')))
-    setSelDays(paramToArray(params.get('days')))
-    const d = params.get('distance')
-    const n = Number(d)
-    const hasLocation = params.get('zip') || params.get('lat')
-    setMaxDistance(hasLocation ? (d != null && !isNaN(n) && n >= DISTANCE_MIN && n <= DISTANCE_MAX ? n : DISTANCE_DEFAULT) : null)
-  }, [params.toString()])
+  const applyFilters = (changes = {}, closePanel = true) => {
+    clearTimeout(draftTimer.current)
+    const next = new URLSearchParams(params)
+    const keyword = q.trim()
+    if (keyword) next.set('q', keyword)
+    else next.delete('q')
 
-  const applyFilters = (closePanel = true) => {
-    const p = new URLSearchParams()
-    const zipTrimmed = (zip && String(zip).trim()) || ''
-    const zipValid = normalizeZip(zipTrimmed)
-    const qTrimmed = (q && String(q).trim()) || ''
-    if (qTrimmed) p.set('q', qTrimmed)
-    // Location precedence: this component's own geolocation, else a lat/lng
-    // that arrived via the URL (e.g. "Use my location" on the home page),
-    // else a typed zip. Without the URL fallback, rebuilding the query here
-    // would silently drop the user's "near me" location.
-    const urlLat = params.get('lat')
-    const urlLng = params.get('lng')
-    if (userCoords) {
-      p.set('lat', String(userCoords[0]))
-      p.set('lng', String(userCoords[1]))
-      p.set('distance', String(maxDistance ?? DISTANCE_DEFAULT))
-    } else if (urlLat && urlLng) {
-      p.set('lat', urlLat)
-      p.set('lng', urlLng)
-      p.set('distance', String(maxDistance ?? DISTANCE_DEFAULT))
-    } else {
-      if (zipValid) p.set('zip', zipValid)
-      if (maxDistance != null && zipValid) p.set('distance', String(maxDistance))
+    const validZip = normalizeZip(zip)
+    if (changes.coords) {
+      next.delete('zip')
+      next.set('lat', String(changes.coords[0]))
+      next.set('lng', String(changes.coords[1]))
+      zipEdited.current = false
+      setZip('')
+      setZipInputError(false)
+    } else if (zipEdited.current) {
+      if (validZip || !zip.trim()) {
+        next.delete('lat')
+        next.delete('lng')
+        if (validZip) next.set('zip', validZip)
+        else next.delete('zip')
+        zipEdited.current = false
+      } else if (closePanel) {
+        setZipInputError(true)
+        return
+      }
     }
-    if (selType.length) p.set('type', selType.join(','))
-    if (selIntensity.length) p.set('intensity', selIntensity.join(','))
-    if (selCost.length) p.set('cost', selCost.join(','))
-    if (selFormat.length) p.set('format', selFormat.join(','))
-    if (selDays.length) p.set('days', selDays.join(','))
-    // No-op guard: the URL→state sync effect creates fresh array references,
-    // which trips the auto-apply effects on mount. If rebuilding produces the
-    // current URL, skip navigating so we don't clobber params (and avoid
-    // redundant history entries / reload loops).
-    const next = p.toString()
-    if (next === params.toString()) {
-      if (closePanel) setShowFilters(false)
-      return
+
+    for (const field of ['type', 'intensity', 'cost', 'format', 'days']) {
+      if (!Object.hasOwn(changes, field)) continue
+      if (changes[field].length) next.set(field, changes[field].join(','))
+      else next.delete(field)
     }
-    navigate(`#/search?${next}`)
-    if (closePanel) setShowFilters(false)
+    const distance = changes.distance ?? maxDistance
+    if (!next.get('zip') && !searchCoordinates(next)) next.delete('distance')
+    else if (distance !== DISTANCE_DEFAULT || next.has('distance')) next.set('distance', String(distance))
+
+    const nextQuery = next.toString()
+    if (nextQuery !== queryString) {
+      navigate('#/search' + (nextQuery ? '?' + nextQuery : ''))
+    }
+    if (closePanel && showFilters) {
+      setShowFilters(false)
+      if (filtersToggleRef.current?.getClientRects().length) filtersToggleRef.current.focus()
+    }
+  }
+  applyLatest.current = applyFilters
+
+  const queueSearch = () => {
+    clearTimeout(draftTimer.current)
+    draftTimer.current = setTimeout(() => applyLatest.current({}, false), 400)
   }
 
-  // Auto-apply when checkbox filters change (results update immediately)
-  const didMountFilters = useRef(false)
-  useEffect(() => {
-    if (!didMountFilters.current) {
-      didMountFilters.current = true
-      return
-    }
-    applyFilters(false)
-  }, [selType, selIntensity, selCost, selFormat, selDays])
+  const changeZip = value => {
+    ++locationIntent.current
+    zipEdited.current = true
+    setZip(value)
+    setZipInputError(false)
+    queueSearch()
+  }
 
-  // Auto-apply distance changes with debounce so slider dragging isn't disrupted
-  const didMountDistance = useRef(false)
-  const distanceDebounceRef = useRef(null)
-  useEffect(() => {
-    if (!didMountDistance.current) {
-      didMountDistance.current = true
-      return
-    }
-    if (distanceDebounceRef.current) clearTimeout(distanceDebounceRef.current)
-    distanceDebounceRef.current = setTimeout(() => {
-      applyFilters(false)
-      distanceDebounceRef.current = null
-    }, 400)
-    return () => {
-      if (distanceDebounceRef.current) clearTimeout(distanceDebounceRef.current)
-    }
-  }, [maxDistance])
-
-  // Auto-apply when keyword search or zip change (debounced so we don't navigate on every keystroke).
-  // Scroll containment for the sidebar is handled by `overscroll-behavior` in CSS.
-  const didMountSearch = useRef(false)
-  const debounceRef = useRef(null)
-  useEffect(() => {
-    if (!didMountSearch.current) {
-      didMountSearch.current = true
-      return
-    }
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(() => {
-      applyFilters(false)
-      debounceRef.current = null
-    }, 400)
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current)
-    }
-  }, [zip, q])
+  const chooseLocation = () => {
+    const intent = ++locationIntent.current
+    requestLocation(coords => {
+      if (intent === locationIntent.current) applyLatest.current({ coords }, false)
+    })
+  }
 
   const clearFilters = () => {
-    setSelType([]); setSelIntensity([]); setSelCost([])
-    setSelFormat([]); setSelDays([]); setZip(''); setQ('')
-    setMaxDistance((params.get('zip') || params.get('lat')) ? DISTANCE_DEFAULT : null)
-    const keep = new URLSearchParams()
-    if (params.get('zip')) keep.set('zip', params.get('zip'))
-    else if (params.get('lat') && params.get('lng')) {
-      keep.set('lat', params.get('lat'))
-      keep.set('lng', params.get('lng'))
-      keep.set('distance', params.get('distance') || String(DISTANCE_DEFAULT))
-    }
-    navigate('#/search' + (keep.toString() ? `?${keep.toString()}` : ''))
+    ++locationIntent.current
+    clearTimeout(draftTimer.current)
+    zipEdited.current = false
+    setQ('')
+    setZip('')
+    setMaxDistance(DISTANCE_DEFAULT)
+    setZipInputError(false)
+    navigate('#/search')
   }
 
   const activeFilterCount = selType.length + selIntensity.length + selCost.length + selFormat.length + selDays.length
-
-  // Build list of active filter chips for display above results
   const activeChips = [
-    ...selType.map(v => ({ label: v, remove: () => setSelType(selType.filter(x => x !== v)) })),
-    ...selIntensity.map(v => ({ label: v, remove: () => setSelIntensity(selIntensity.filter(x => x !== v)) })),
-    ...selCost.map(v => ({ label: v, remove: () => setSelCost(selCost.filter(x => x !== v)) })),
-    ...selFormat.map(v => ({ label: v, remove: () => setSelFormat(selFormat.filter(x => x !== v)) })),
-    ...selDays.map(v => ({ label: v, remove: () => setSelDays(selDays.filter(x => x !== v)) })),
+    ...selType.map(v => ({ label: v, remove: () => applyFilters({ type: selType.filter(x => x !== v) }, false) })),
+    ...selIntensity.map(v => ({ label: v, remove: () => applyFilters({ intensity: selIntensity.filter(x => x !== v) }, false) })),
+    ...selCost.map(v => ({ label: v, remove: () => applyFilters({ cost: selCost.filter(x => x !== v) }, false) })),
+    ...selFormat.map(v => ({ label: v, remove: () => applyFilters({ format: selFormat.filter(x => x !== v) }, false) })),
+    ...selDays.map(v => ({ label: v, remove: () => applyFilters({ days: selDays.filter(x => x !== v) }, false) })),
   ]
 
   return (
@@ -1662,7 +1513,7 @@ function SearchResults({ params }) {
             type="search"
             placeholder="Search activities (e.g. boxing, yoga)…"
             value={q}
-            onChange={e => setQ(e.target.value)}
+            onChange={e => { setQ(e.target.value); queueSearch() }}
             autoComplete="off"
           />
           <label className="sr-only" htmlFor="search-zip">
@@ -1677,13 +1528,14 @@ function SearchResults({ params }) {
             placeholder="Zip Code"
             autoComplete="postal-code"
             value={zip}
-            onChange={e => setZip(e.target.value)}
+            onChange={e => changeZip(e.target.value)}
             maxLength={5}
-            aria-describedby={locError ? 'search-loc-error' : undefined}
+            aria-invalid={zipInputError || undefined}
+            aria-describedby={zipInputError ? 'search-zip-error' : undefined}
           />
           <button
             type="button"
-            onClick={requestLocation}
+            onClick={chooseLocation}
             disabled={locLoading}
             className="btn-loc btn-loc-compact"
             aria-describedby={locError ? 'search-loc-error' : undefined}
@@ -1696,10 +1548,12 @@ function SearchResults({ params }) {
               {locError}
             </span>
           )}
+          {zipInputError && <span id="search-zip-error" className="loc-error" role="alert">Enter a five-digit ZIP code.</span>}
           <button type="submit" className="btn btn-primary">Search</button>
           <button
             type="button"
             className="btn btn-outline btn-filter-toggle"
+            ref={filtersToggleRef}
             aria-expanded={showFilters}
             aria-controls="filters-panel"
             onClick={() => setShowFilters(f => !f)}
@@ -1719,16 +1573,16 @@ function SearchResults({ params }) {
         >
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0.5rem'}}>
             <strong style={{fontSize:'0.95rem'}}>Filters</strong>
-            {(selType.length > 0 || selIntensity.length > 0 || selCost.length > 0 || selFormat.length > 0 || selDays.length > 0 || (zip && maxDistance != null) || params.get('lat')) && (
+            {(activeFilterCount > 0 || q || zip || urlCoords) && (
               <button onClick={clearFilters} className="filters-clear">Clear all</button>
             )}
           </div>
 
-          <FilterGroupMulti title="Activity Type" options={unionActivityTypes(filterOptions.activityType, DEFAULT_FILTER_OPTIONS.activityType)} value={selType} onChange={setSelType} initialVisible={6} />
-          <FilterGroupMulti title="Intensity" options={unionIntensities(filterOptions.intensity, DEFAULT_FILTER_OPTIONS.intensity)} value={selIntensity} onChange={setSelIntensity} initialVisible={5} />
-          <FilterGroupMulti title="Cost" options={unionSortedStrings(filterOptions.cost, DEFAULT_FILTER_OPTIONS.cost)} value={selCost} onChange={setSelCost} initialVisible={5} />
-          <FilterGroupMulti title="Format" options={unionSortedStrings(filterOptions.format, DEFAULT_FILTER_OPTIONS.format)} value={selFormat} onChange={setSelFormat} initialVisible={5} />
-          <FilterGroupMulti title="Days of week" options={unionDaysOfWeek(filterOptions.daysOfWeek, DEFAULT_FILTER_OPTIONS.daysOfWeek)} value={selDays} onChange={setSelDays} initialVisible={7} />
+          <FilterGroupMulti title="Activity Type" options={unionActivityTypes(filterOptions.activityType, DEFAULT_FILTER_OPTIONS.activityType)} value={selType} onChange={type => applyFilters({ type }, false)} initialVisible={6} />
+          <FilterGroupMulti title="Intensity" options={unionIntensities(filterOptions.intensity, DEFAULT_FILTER_OPTIONS.intensity)} value={selIntensity} onChange={intensity => applyFilters({ intensity }, false)} initialVisible={5} />
+          <FilterGroupMulti title="Cost" options={unionSortedStrings(filterOptions.cost, DEFAULT_FILTER_OPTIONS.cost)} value={selCost} onChange={cost => applyFilters({ cost }, false)} initialVisible={5} />
+          <FilterGroupMulti title="Format" options={unionSortedStrings(filterOptions.format, DEFAULT_FILTER_OPTIONS.format)} value={selFormat} onChange={format => applyFilters({ format }, false)} initialVisible={5} />
+          <FilterGroupMulti title="Days of week" options={unionDaysOfWeek(filterOptions.daysOfWeek, DEFAULT_FILTER_OPTIONS.daysOfWeek)} value={selDays} onChange={days => applyFilters({ days }, false)} initialVisible={7} />
 
           <fieldset className="filter-distance" aria-describedby="distance-help">
             <legend className="filter-title">Distance from you</legend>
@@ -1746,13 +1600,14 @@ function SearchResults({ params }) {
               placeholder="Your zip code"
               autoComplete="postal-code"
               value={zip}
-              onChange={e => setZip(e.target.value)}
+              onChange={e => changeZip(e.target.value)}
               maxLength={5}
-              aria-describedby={locError ? 'filter-loc-error' : undefined}
+              aria-invalid={zipInputError || undefined}
+              aria-describedby={zipInputError ? 'filter-zip-error' : undefined}
             />
               <button
                 type="button"
-                onClick={requestLocation}
+                onClick={chooseLocation}
                 disabled={locLoading}
                 className="btn-loc"
                 aria-describedby={locError ? 'filter-loc-error' : undefined}
@@ -1762,7 +1617,8 @@ function SearchResults({ params }) {
               </button>
             </div>
               {locError && <span id="filter-loc-error" className="loc-error" role="alert">{locError}</span>}
-            {((zip && /^\d{5}$/.test(zip)) || userCoords || params.get('lat')) && (
+              {zipInputError && <span id="filter-zip-error" className="loc-error">Enter a five-digit ZIP code.</span>}
+            {(normalizeZip(zip) || urlCoords) && (
             <>
               <div className="distance-slider-label">Within <strong>{maxDistance ?? DISTANCE_DEFAULT} miles</strong></div>
               <div className="distance-slider-wrap">
@@ -1773,7 +1629,7 @@ function SearchResults({ params }) {
                   max={DISTANCE_MAX}
                   step={5}
                   value={maxDistance ?? DISTANCE_DEFAULT}
-                  onChange={e => setMaxDistance(Number(e.target.value))}
+                  onChange={e => { setMaxDistance(Number(e.target.value)); queueSearch() }}
                   aria-label="Maximum distance"
                   aria-valuetext={`${maxDistance ?? DISTANCE_DEFAULT} miles`}
                 />
@@ -1785,7 +1641,7 @@ function SearchResults({ params }) {
                     type="button"
                     className={`distance-tick ${(maxDistance ?? DISTANCE_DEFAULT) === m ? 'active' : ''}`}
                     aria-pressed={(maxDistance ?? DISTANCE_DEFAULT) === m}
-                    onClick={() => setMaxDistance(m)}
+                    onClick={() => { setMaxDistance(m); applyFilters({ distance: m }, false) }}
                   >
                     {m} mi
                   </button>
@@ -1795,7 +1651,7 @@ function SearchResults({ params }) {
             )}
           </fieldset>
 
-          <button className="btn btn-primary" style={{width:'100%',marginTop:'1rem'}} onClick={applyFilters}>
+          <button className="btn btn-primary" style={{width:'100%',marginTop:'1rem'}} onClick={() => applyFilters()}>
             Apply Filters
           </button>
         </aside>
@@ -1808,14 +1664,14 @@ function SearchResults({ params }) {
             <div className="state-msg state-msg-error" role="alert">
               <p><strong>We couldn't load activities right now.</strong></p>
               <p style={{marginTop:'0.5rem',fontSize:'0.95rem'}}>Please check your internet connection, or try again in a few minutes.</p>
-              <button className="btn btn-primary" style={{marginTop:'1.25rem'}} onClick={load}>
+              <button className="btn btn-primary" style={{marginTop:'1.25rem'}} onClick={() => setRetry(count => count + 1)}>
                 Try again
               </button>
             </div>
           ) : (
             <>
               <h1 id="results-heading" className="results-heading">
-                {isEventsOnlyFilter(paramToArray(params.get('type')))
+                {eventsOnly
                   ? 'Upcoming events'
                   : (activeFilterCount > 0 || params.get('q') || params.get('zip') || params.get('lat'))
                     ? 'Activities that match your search'
@@ -1823,12 +1679,15 @@ function SearchResults({ params }) {
               </h1>
               <div aria-live="polite" aria-atomic="true">
                 <p className="results-meta">
-                  <strong>{activities.length}</strong> {isEventsOnlyFilter(paramToArray(params.get('type')))
+                  <strong>{activities.length}</strong> {eventsOnly
                     ? (activities.length === 1 ? 'upcoming event' : 'upcoming events')
                     : (activities.length === 1 ? 'activity' : 'activities')} found
-                  {(params.get('lat') && params.get('lng')) ? ' near you' : params.get('zip') ? ` near ${params.get('zip')}` : ''}
-                  {((params.get('lat') && params.get('lng')) || params.get('zip')) && ` within ${params.get('distance') || DISTANCE_DEFAULT} mi`}
+                  {locationResult?.matched && (locationResult.zip ? ` near ${locationResult.zip}` : ' near you')}
+                  {locationResult?.matched && ` within ${locationResult.distance} mi`}
                 </p>
+                {locationResult?.zip && !locationResult.matched && (
+                  <p className="search-location-notice">We couldn’t find ZIP code {locationResult.zip}. Showing results without a distance limit.</p>
+                )}
               </div>
               {activeChips.length > 0 && (
                 <div className="active-chips" aria-label="Active filters">
@@ -1845,7 +1704,7 @@ function SearchResults({ params }) {
                 </div>
               )}
               {activities.length === 0 ? (
-                isEventsOnlyFilter(paramToArray(params.get('type'))) ? (
+                eventsOnly ? (
                   <div className="empty-state">
                     <div className="empty-state-icon" aria-hidden="true">📅</div>
                     <h2>No upcoming events right now</h2>
@@ -1893,20 +1752,26 @@ function ActivityCard({ activity: a }) {
     ? formatEventDate(a.hasStartDate ? a.startDateYMD : null, a.hasEndDate ? a.endDateYMD : null)
     : ''
   const timeText = isEvent ? extractEventTime(a.schedule) : ''
+  const rawRecurringSchedule = !isEvent && a.schedule && !parseWeeklySchedule(a.schedule)
   // When the Schedule text is not a recognisable time ("Doors open at 6"),
   // keep showing it as typed rather than dropping it from the card.
   const scheduleFallback = isEvent && dateText && !timeText ? String(a.schedule || '').trim() : ''
-  const dayPrefix = dateText ? eventDayPrefix(a, toLocalYMD(new Date())) : ''
+  const dayPrefix = dateText ? eventDayPrefix(a, centralCalendarDate()) : ''
   // The link name carries the date (so a Tab stop says when it is) but not
   // the time; the visible line below has both, so nothing is read twice.
   const spokenDate = [dayPrefix, dateText].filter(Boolean).join(', ')
+  const detailHref = `#/activity/${a.id}`
 
   return (
     <li className="activity-card">
       <div className="card-top">
         <div>
           <h2 className="card-name">
-            <a className="card-link" href={`#/activity/${a.id}`}>
+            <a className="card-link" href={detailHref} onClick={event => {
+              if (!isPlainLinkClick(event)) return
+              event.preventDefault()
+              navigate(detailHref, { activitySearchHref: window.location.hash })
+            }}>
               {a.name}
               <span className="sr-only">{spokenDate ? `, ${spokenDate}, view details` : ' — view details'}</span>
             </a>
@@ -1928,10 +1793,10 @@ function ActivityCard({ activity: a }) {
               </div>
               {scheduleFallback && <div className="card-days">Schedule: {scheduleFallback}</div>}
             </>
-          ) : (a.daysOfWeek || a.schedule) ? (
-            <div className="card-days">
-              {a.daysOfWeek ? <>Days: {a.daysOfWeek}</> : <>Schedule: {a.schedule}</>}
-            </div>
+          ) : rawRecurringSchedule ? (
+            <div className="card-days card-schedule">Schedule: {a.schedule}</div>
+          ) : a.daysOfWeek ? (
+            <div className="card-days">Days: {a.daysOfWeek}</div>
           ) : null}
         </div>
         <span className={`badge ${isFreeCost ? 'badge-cost-free' : ''}`}>
@@ -1939,7 +1804,7 @@ function ActivityCard({ activity: a }) {
         </span>
       </div>
       <div className="card-meta">
-        {a.schedule && !isEvent && <span className="badge"><Icon.clock />{a.schedule.split(',')[0]}</span>}
+        {a.schedule && !isEvent && !rawRecurringSchedule && <span className="badge"><Icon.clock />{a.schedule.split(',')[0]}</span>}
         {a.intensity && <span className="badge"><Icon.bolt />{a.intensity}</span>}
         {(Array.isArray(a.type) ? a.type.length > 0 : !!a.type) && <span className="badge blue">{Array.isArray(a.type) ? a.type.join(', ') : a.type}</span>}
         {a.dist != null && <span className="badge">{a.dist.toFixed(1)} mi away</span>}
@@ -2098,11 +1963,13 @@ function ActivityDetail({ id }) {
   const copyResetRef = useRef(null)
 
   useEffect(() => {
-    setLoading(true)
-    fetchActivityById(id)
-      .then(setActivity)
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false))
+    const controller = new AbortController()
+    const { signal } = controller
+    fetchActivityById(id, signal)
+      .then(data => { if (!signal.aborted) setActivity(data) })
+      .catch(e => { if (!signal.aborted) setError(e.message) })
+      .finally(() => { if (!signal.aborted) setLoading(false) })
+    return () => controller.abort()
   }, [id])
 
   useEffect(() => () => {
@@ -2182,28 +2049,20 @@ function ActivityDetail({ id }) {
 
   // Derived view data — keeps the JSX below readable.
   const phones = splitPhones(a.phone)
-  const scheduleGroups = parseSchedule(a.schedule)
+  const scheduleGroups = parseWeeklySchedule(a.schedule)
   const isEvent = isEventActivity(a)
   const eventDate = isEvent
     ? formatEventDate(a.hasStartDate ? a.startDateYMD : null, a.hasEndDate ? a.endDateYMD : null, { withYear: true, longRange: true })
     : ''
   const eventTime = isEvent ? extractEventTime(a.schedule) : ''
-  const eventPrefix = eventDate ? eventDayPrefix(a, toLocalYMD(new Date())) : ''
+  const eventPrefix = eventDate ? eventDayPrefix(a, centralCalendarDate()) : ''
   const websiteRaw = String(a.website || '').trim()
-  const websiteUrl = websiteRaw && !/^(n\/?a|none|tbd|-|—)$/i.test(websiteRaw)
-    ? safeHttpUrl(websiteRaw)
-    : null
-  const registrationRaw = String(a.registrationLink || '').trim()
-  const emailOrNull = raw => {
-    const s = String(raw || '').trim().replace(/^mailto:/i, '').replace(/^<+|>+$/g, '').trim()
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) ? s : null
-  }
-  // Some activities use the Registration Link field to hold an email
-  // ("email me to sign up"). Check for an email BEFORE trying to parse a
-  // URL — "person@example.com" also parses as a valid https URL with a
-  // username, which used to win and produce a broken "Register now" link.
-  const registrationEmail = emailOrNull(registrationRaw)
-  const registrationUrl = registrationEmail ? null : safeHttpUrl(registrationRaw)
+  const websiteUrl = normalizeWebUrl(websiteRaw)
+  const { url: registrationUrl, email: registrationEmail } = parseRegistrationLink(a.registrationLink)
+  const organizerEmails = String(a.email || '').split(/[,;\s]+/)
+    .map(email => email.replace(/^mailto:/i, '').replace(/^<+|>+$/g, ''))
+    .filter(isBareEmail)
+  const formatMailboxList = list => list.map(email => encodeURIComponent(email).replace('%40', '@')).join(',')
   // No registration link at all? Fall back to the Program Email Address so
   // the sidebar still offers a clear way to sign up — several activities
   // only say "email to register" inside their free-text details. Cells may
@@ -2213,8 +2072,10 @@ function ActivityDetail({ id }) {
     ? [registrationEmail]
     : registrationUrl
       ? []
-      : String(a.email || '').split(/[,;\s]+/).map(emailOrNull).filter(Boolean)
-  const signupEmail = signupEmails.join(',')
+      : organizerEmails
+  const signupEmail = formatMailboxList(signupEmails)
+  const previousSearch = window.history.state?.activitySearchHref
+  const backHref = /^#\/search(?:\?|$)/.test(previousSearch || '') ? previousSearch : '#/search'
   const directionsUrl = a.address
     ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(a.address)}`
     : null
@@ -2260,12 +2121,13 @@ function ActivityDetail({ id }) {
     <div>
       <div className="detail-wrap">
         <div className="detail-topbar">
-          <button className="detail-back" onClick={() => {
-            // Preserve search context — go back if there's history, otherwise fall back to search
-            if (window.history.length > 1) { window.history.back() } else { navigate('#/search') }
+          <a className="detail-back" href={backHref} onClick={event => {
+            if (previousSearch !== backHref || !isPlainLinkClick(event)) return
+            event.preventDefault()
+            window.history.back()
           }}>
             <Icon.back /> Back to results
-          </button>
+          </a>
           <div className="detail-actions">
             <button type="button" className="detail-action-btn" onClick={handleShare}>
               <Icon.share /> {canNativeShare ? 'Share' : (copied ? 'Link copied!' : 'Copy link')}
@@ -2377,9 +2239,11 @@ function ActivityDetail({ id }) {
                 {a.email && (
                   <div className="info-row">
                     <span className="info-label">Email</span>
-                    <a className="info-value contact-link" href={`mailto:${a.email}`}>
-                      <Icon.mail /> {a.email}
-                    </a>
+                    {organizerEmails.length > 0 ? (
+                      <a className="info-value contact-link" href={`mailto:${formatMailboxList(organizerEmails)}`}>
+                        <Icon.mail /> {a.email}
+                      </a>
+                    ) : <span className="info-value">{a.email}</span>}
                   </div>
                 )}
               </section>
@@ -2437,12 +2301,12 @@ function ActivityDetail({ id }) {
               )}
               {!registrationUrl && signupEmails.length > 0 && (
                 <a
-                  href={`mailto:${signupEmail}?subject=${encodeURIComponent('Sign-up: ' + a.name)}`}
+                    href={`mailto:${signupEmail}?subject=${encodeURIComponent('Sign-up: ' + a.name)}`}
                   className="register-cta"
                   aria-label={
                     signupEmails.length > 1
                       ? `Email the organizers to register for ${a.name}`
-                      : `Email the organizer to register for ${a.name} (${signupEmail})`
+                      : `Email the organizer to register for ${a.name} (${signupEmails[0]})`
                   }
                 >
                   <Icon.mail />
@@ -2495,8 +2359,6 @@ const EMPTY_SUBMIT_FORM = {
   submitterName: '', submitterEmail: '',
 }
 
-const SUBMIT_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-
 // The server validates these against the same fixed lists (functions/api/submit.js).
 // The form offers exactly what the endpoint accepts — schema-driven choices that
 // the server would reject must not appear here.
@@ -2513,6 +2375,7 @@ const SUBMIT_FIELD_IDS = {
   format: 'submit-format',
   address: 'submit-address',
   zip: 'submit-zip',
+  startDate: 'submit-start-date',
   endDate: 'submit-end-date',
   programEmail: 'submit-program-email',
   submitterEmail: 'submit-your-email',
@@ -2588,30 +2451,24 @@ function SubmitActivity() {
   const summaryRef = useRef(null)
   const successRef = useRef(null)
   const restartedRef = useRef(false)
+  const isEvent = isEventsType(form.types)
 
   const set = key => value => setForm(f => ({ ...f, [key]: value }))
 
-  // Activity Type is the one open-ended list (the server accepts new values
-  // via typecast). It comes from the same two sources as the search sidebar:
-  // the activity catalog plus the Airtable schema when the API can read it.
-  // Hidden legacy values stay excluded.
+  // Offer the choices accepted by both Airtable tables. The Other field
+  // lets visitors suggest a type for review without changing the schema.
   useEffect(() => {
     let cancelled = false
-    fetchCatalog()
-      .then(acts => {
-        if (cancelled) return
-        const derived = deriveFilterOptionsFromActivities(acts)
-        setTypeOptions(prev => unionActivityTypes(derived.activityType, prev))
+    fetchFilterOptionsFromSchema('submit').then(opts => {
+      if (cancelled || !Array.isArray(opts?.activityType)) return
+      const allowed = unionActivityTypes(opts.activityType)
+      setTypeOptions(allowed)
+      setForm(prev => {
+        const types = prev.types.filter(type => allowed.includes(type))
+        return types.length === prev.types.length ? prev : { ...prev, types }
       })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [])
-
-  useEffect(() => {
-    fetchFilterOptionsFromSchema().then(opts => {
-      if (!opts) return
-      setTypeOptions(prev => unionActivityTypes(opts.activityType, prev))
     })
+    return () => { cancelled = true }
   }, [])
 
   // After a failed submit, send focus to the error summary so keyboard and
@@ -2657,13 +2514,18 @@ function SubmitActivity() {
         errs.address = 'Add an address or zip code so people can find the activity.'
       }
     }
-    if (form.startDate && form.endDate && form.endDate < form.startDate) {
+    if ((isEvent || form.startDate) && !isDateOnly(form.startDate)) {
+      errs.startDate = isEvent ? 'Enter the date this event starts.' : 'Enter a valid start date.'
+    }
+    if (form.endDate && !isDateOnly(form.endDate)) {
+      errs.endDate = 'Enter a valid end date.'
+    } else if (form.startDate && form.endDate && form.endDate < form.startDate) {
       errs.endDate = 'The end date is before the start date.'
     }
-    if (form.programEmail.trim() && !SUBMIT_EMAIL_RE.test(form.programEmail.trim())) {
+    if (form.programEmail.trim() && !isBareEmail(form.programEmail.trim())) {
       errs.programEmail = 'The program email address does not look right.'
     }
-    if (form.submitterEmail.trim() && !SUBMIT_EMAIL_RE.test(form.submitterEmail.trim())) {
+    if (form.submitterEmail.trim() && !isBareEmail(form.submitterEmail.trim())) {
       errs.submitterEmail = 'Your email address does not look right.'
     }
     return errs
@@ -2963,7 +2825,9 @@ function SubmitActivity() {
                   <SubmitTextField
                     id="submit-start-date"
                     label="Start date"
-                    hint="For a one-time event, the event date. For classes, only if they run for a limited time."
+                    required={isEvent}
+                    hint={isEvent ? 'For a one-day event, enter the event date here.' : 'Only if the activity runs for a limited time.'}
+                    error={errors.startDate}
                     value={form.startDate}
                     onChange={set('startDate')}
                     type="date"
@@ -3222,6 +3086,14 @@ export default function App() {
   const hash = useRoute()
   const { path, params } = parseHash(hash)
   const mainRef = useRef(null)
+  const skipToMain = event => {
+    event.preventDefault()
+    const main = mainRef.current
+    if (!main) return
+    const navHeight = document.querySelector('nav')?.getBoundingClientRect().height || 0
+    main.focus({ preventScroll: true })
+    window.scrollTo({ top: main.getBoundingClientRect().top + window.scrollY - navHeight, behavior: 'instant' })
+  }
 
   const handleAcceptDisclaimer = useCallback(() => {
     try { localStorage.setItem(DISCLAIMER_KEY, 'true') } catch {}
@@ -3236,7 +3108,7 @@ export default function App() {
     if (disclaimerAccepted && mainRef.current) {
       mainRef.current.focus({ preventScroll: true })
     }
-  }, [hash, disclaimerAccepted])
+  }, [path, disclaimerAccepted])
 
   // WCAG 2.4.2 — update page title on route change
   useEffect(() => {
@@ -3265,14 +3137,14 @@ export default function App() {
     page = <SubmitActivity />
   } else if (path.startsWith('/activity/')) {
     const id = path.replace('/activity/', '')
-    page = <ActivityDetail id={id} />
+    page = <ActivityDetail key={id} id={id} />
   } else {
     page = <Home />
   }
 
   return (
     <>
-      <a href="#main-content" className="skip-link">
+      <a href="#main-content" className="skip-link" onClick={skipToMain}>
         Skip to main content
       </a>
       <Nav />

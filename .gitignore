@@ -1,5 +1,8 @@
 .env
+.env.*
+!.env.example
 node_modules
 dist
 .dev.vars
+.dev.vars.*
 .wrangler

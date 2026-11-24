@@ -7,12 +7,10 @@
 // Airtable and the controlled clock.
 
 import assert from 'node:assert/strict'
-import path from 'node:path'
 import { test } from 'node:test'
-import { fileURLToPath, pathToFileURL } from 'node:url'
 import zlib from 'node:zlib'
 import qrcode from 'qrcode-generator'
-import { ANDROID, CODES, ENV, IPHONE, SCANS, load, setup, smallestGap, visit } from './harness.mjs'
+import { ANDROID, CODES, ENV, IPHONE, SCANS, load, loadQrWithMiddleware, setup, smallestGap, visit } from './harness.mjs'
 
 const Q = 'functions/q/[code].js'
 const HOME = 'https://mnparkinsons.org/'
@@ -22,6 +20,37 @@ const ip = (n) => `198.51.${Math.floor(n / 250)}.${(n % 250) + 1}`
 const noted = (air) => air.markers().reduce((sum, row) => sum + Number(/about (\d+) scan/.exec(row.fields.Scan)[1]), 0)
 // Scan rows that are counted against a code (everything but the notes).
 const stored = (air) => air.scans.filter((row) => row.fields['QR Code'])
+
+function gatewayEnv(air, claimStatus = 204, fetchUpstream = air.fetch) {
+  const claims = new Set()
+  const observations = new Map()
+  const gateway = {
+    async fetch(url, init) {
+      const path = new URL(url).pathname
+      if (path === '/claim') {
+        const { scope, key } = JSON.parse(init.body)
+        assert.equal(scope, 'qr-creation')
+        if (claimStatus !== 204) return new Response(null, { status: claimStatus })
+        if (claims.has(key)) return new Response(null, { status: 429 })
+        claims.add(key)
+        return new Response(null, { status: 204 })
+      }
+      if (path.startsWith('/qr-cache/')) {
+        let latest = observations.get(path)
+        if (init.method === 'PUT') {
+          const { observation } = JSON.parse(init.body)
+          if (!latest || observation.started > latest.started) {
+            latest = observation
+            observations.set(path, latest)
+          }
+        }
+        return latest ? Response.json(latest) : new Response(null, { status: 404 })
+      }
+      return fetchUpstream(url, init)
+    },
+  }
+  return { ...ENV, AIRTABLE_GATE: { idFromName: (name) => name, get: () => gateway } }
+}
 
 // ── The basics ─────────────────────────────────────────────────────────────
 
@@ -41,10 +70,8 @@ test('a scan redirects to the Destination with the code attached, and is stored 
   assert.equal(air.scans.length, 1)
   const fields = air.scans[0].fields
   assert.deepEqual(fields['QR Code'], [row.id])
-  assert.equal(fields.City, 'Duluth')
-  assert.equal(fields.Region, 'Minnesota')
-  assert.equal(fields.Country, 'US')
-  assert.match(fields.Visitor, /^[0-9a-f]{12}$/)
+  assert.deepEqual(Object.keys(fields).sort(), ['QR Code', 'Scan', 'Time'])
+  assert.equal(fields.Time, new Date(visitor.startedAt).toISOString())
   assert.match(fields.Scan, /^udall-flyer · \d{4}-\d\d-\d\d$/)
   assert.equal(air.sent('GET', CODES)[0].auth, 'Bearer read-token')
   assert.equal(air.sent('POST', SCANS)[0].auth, 'Bearer write-token')
@@ -505,6 +532,30 @@ test('two server instances registering the same new code count against one row',
   assert.equal(air.scansFor('table-tent').length, 4)
 })
 
+test('the shared gateway allows only one registration across cold isolates', async (t) => {
+  const { air, cache, advance } = setup(t)
+  cache.hide = () => true // the isolates cannot use each other's edge-cache entries
+  const env = gatewayEnv(air)
+  const first = visit(await load(Q), 'table-tent', { env, ip: ip(1) })
+  const second = visit(await load(Q), 'table-tent', { env, ip: ip(2) })
+  await advance(14000)
+  assert.equal(await where(first), `${HOME}?src=table-tent`)
+  assert.equal(await where(second), `${HOME}?src=table-tent`)
+  assert.equal(air.count('POST', CODES), 1)
+  assert.equal(air.count('DELETE', CODES), 0)
+  assert.equal(air.scansFor('table-tent').length, 2)
+})
+
+test('a gateway claim outage never falls back to uncoordinated registration', async (t) => {
+  const { air, cache, advance } = setup(t)
+  const route = await load(Q)
+  const visitor = visit(route, 'new-poster', { env: gatewayEnv(air, 503) })
+  await advance(15000)
+  assert.equal(await where(visitor), `${HOME}?src=new-poster`)
+  assert.equal(air.count('POST', CODES), 0)
+  assert.equal(cache.stored.size, 0)
+})
+
 test('an instance that saw only the spare twin row moves to the shared one within seconds', async (t) => {
   const { air, cache, advance } = setup(t)
   cache.hide = (key) => key.includes('/registering/') // as above: the race happens
@@ -709,6 +760,29 @@ for (const [name, failure] of [
   })
 }
 
+test('a scan that reached Airtable before the connection failed is never written again', async (t) => {
+  const { air, advance } = setup(t)
+  const route = await load(Q)
+  air.addCode('poster')
+  let firstWrite = true
+  air.respond = (call) => {
+    if (call.table !== SCANS || !firstWrite) return null
+    firstWrite = false
+    return { error: true, commit: true }
+  }
+  const first = visit(route, 'poster')
+  await advance(30000)
+  assert.equal(air.count('POST', SCANS), 1)
+  assert.equal(air.scansFor('poster').length, 1)
+
+  visit(route, 'poster')
+  await advance(8000)
+  const scans = air.scansFor('poster')
+  assert.equal(scans.length, 2)
+  assert.equal(scans.filter((row) => row.fields.Time === new Date(first.startedAt).toISOString()).length, 1)
+  assert.equal(noted(air), 1, 'the route records the uncertainty without retrying the scan')
+})
+
 test('a slow Airtable does not make the NOT RECORDED note repeat', async (t) => {
   const { air, advance } = setup(t)
   const route = await load(Q)
@@ -760,10 +834,7 @@ test('after a 429 this route stays silent for half a minute, then the next scan 
 
 test('rows held back by a 429 are written on the next ordinary page load, without another scan', async (t) => {
   const { air, advance } = setup(t)
-  const route = await load(Q)
-  const here = path.dirname(fileURLToPath(import.meta.url))
-  // The very copy of the API middleware that the route imported.
-  const middleware = await import(pathToFileURL(path.resolve(here, '../functions/api/_middleware.js')).href)
+  const [route, middleware] = await loadQrWithMiddleware()
   air.addCode('poster')
   let limited = 1
   air.respond = (call) => (call.table === SCANS && limited-- > 0 ? { status: 429 } : null)
@@ -866,7 +937,7 @@ test('a scan table that refuses rows for another reason does not cost a lookup o
   const { air, advance } = setup(t)
   const route = await load(Q)
   air.addCode('poster')
-  air.scanFields.delete('City') // someone renamed a QR Scans column: every row is refused
+  air.scanFields.delete('QR Code') // every linked scan row is refused
   for (let n = 0; n < 10; n++) {
     visit(route, 'poster', { ip: ip(n) })
     await advance(5000)
@@ -965,6 +1036,154 @@ test('a stalled edge cache does not stop Airtable being asked', async (t) => {
   assert.equal(air.scansFor('brand-new').length, 1)
 })
 
+for (const [name, original, updated] of [
+  ['a changed destination', '#/search', '#/submit'],
+  ['a newly registered code', null, '#/submit'],
+  ['a removed code', '#/search', null],
+]) {
+  test(`a late answer cannot replace a newer lookup for ${name}`, async (t) => {
+    const { air, advance } = setup(t)
+    const route = await load(Q)
+    const env = { ...ENV, AIRTABLE_WRITE_PAT: '' }
+    if (original) air.addCode('poster', { destination: original })
+    let delayFirst = true
+    air.respond = (call) => {
+      if (call.method !== 'GET' || call.table !== CODES || !delayFirst) return null
+      delayFirst = false
+      return { snapshot: true, latency: 3800 }
+    }
+    const first = visit(route, 'poster', { env })
+    await advance(1600)
+    air.codes.length = 0
+    if (updated) air.addCode('poster', { destination: updated })
+    const second = visit(route, 'poster', { env })
+    await advance(300)
+    const expected = `${HOME}?src=poster${updated || ''}`
+    assert.equal(await where(second), expected)
+    assert.equal(await where(first), expected)
+
+    await advance(2000)
+    const later = visit(route, 'poster', { env })
+    const anotherIsolate = visit(await load(Q), 'poster', { env })
+    await advance(300)
+    assert.equal(await where(later), expected)
+    assert.equal(await where(anotherIsolate), expected)
+    assert.equal(air.count('GET', CODES), 2)
+  })
+}
+
+test('a remembered destination expires after thirty days even in the same isolate', async (t) => {
+  const { air, advance } = setup(t)
+  const route = await load(Q)
+  air.addCode('poster', { destination: '#/submit' })
+  const first = visit(route, 'poster', { method: 'HEAD' })
+  await advance(200)
+  assert.equal(await where(first), `${HOME}?src=poster#/submit`)
+
+  air.respond = () => ({ status: 503 })
+  const month = 31 * 86400000
+  await advance(month, month)
+  const later = visit(route, 'poster', { method: 'HEAD' })
+  await advance(500)
+  assert.equal(await where(later), HOME)
+})
+
+test('a newer edge-cache publication waits for a slower earlier write in the same isolate', async (t) => {
+  const { air, cache, advance } = setup(t)
+  const route = await load(Q)
+  const env = { ...ENV, AIRTABLE_WRITE_PAT: '' }
+  const row = air.addCode('poster', { destination: '#/search', created: Date.now() })
+  let delayFirst = true
+  const put = cache.put.bind(cache)
+  cache.put = async (...args) => {
+    if (delayFirst) {
+      delayFirst = false
+      await new Promise((resolve) => setTimeout(resolve, 6500))
+    }
+    return put(...args)
+  }
+  const first = visit(route, 'poster', { env })
+  await advance(5200)
+  assert.equal(await where(first), `${HOME}?src=poster#/search`)
+  row.fields.Destination = '#/submit'
+  const second = visit(route, 'poster', { env })
+  await advance(1600)
+  assert.equal(await where(second), `${HOME}?src=poster#/submit`)
+
+  const anotherIsolate = visit(await load(Q), 'poster', { env })
+  await advance(300)
+  assert.equal(await where(anotherIsolate), `${HOME}?src=poster#/submit`)
+  assert.equal(air.count('GET', CODES), 2)
+})
+
+test('a late lookup uses the newer gateway winner from another isolate', async (t) => {
+  const { air, cache, advance } = setup(t)
+  const env = { ...gatewayEnv(air), AIRTABLE_WRITE_PAT: '' }
+  const row = air.addCode('poster', { destination: '#/search' })
+  let delayFirst = true
+  air.respond = (call) => {
+    if (call.method !== 'GET' || call.table !== CODES || !delayFirst) return null
+    delayFirst = false
+    return { snapshot: true, latency: 3800 }
+  }
+  const first = visit(await load(Q), 'poster', { env })
+  await advance(1600)
+  row.fields.Destination = '#/submit'
+  const second = visit(await load(Q), 'poster', { env })
+  await advance(2500)
+  const third = visit(await load(Q), 'poster', { env })
+  await advance(300)
+  for (const visitor of [first, second, third]) {
+    assert.equal(await where(visitor), `${HOME}?src=poster#/submit`)
+  }
+  assert.equal(air.count('GET', CODES), 2)
+  assert.equal(cache.stored.size, 0)
+})
+
+test('the lookup sent last wins even when it started first in Pages', async (t) => {
+  const { air, advance } = setup(t)
+  let queueFirst = true
+  const env = {
+    ...gatewayEnv(air, 204, async (url, init) => {
+      if (queueFirst) {
+        queueFirst = false
+        await new Promise((resolve) => setTimeout(resolve, 2800))
+      }
+      const dispatchedAt = Date.now()
+      const response = await air.fetch(url, init)
+      response.headers.set('X-Airtable-Dispatch-Ms', String(dispatchedAt))
+      return response
+    }),
+    AIRTABLE_WRITE_PAT: '',
+  }
+  const row = air.addCode('poster', { destination: '#/search' })
+  const first = visit(await load(Q), 'poster', { env })
+  await advance(300)
+  const second = visit(await load(Q), 'poster', { env })
+  await advance(500)
+  assert.equal(await where(second), `${HOME}?src=poster#/search`)
+
+  row.fields.Destination = '#/submit'
+  await advance(2300)
+  assert.equal(await where(first), `${HOME}?src=poster#/submit`)
+  const third = visit(await load(Q), 'poster', { env })
+  await advance(300)
+  assert.equal(await where(third), `${HOME}?src=poster#/submit`)
+  assert.equal(air.count('GET', CODES), 2)
+})
+
+test('a stalled edge cache does not block a QR image download', async (t) => {
+  const { cache, advance } = setup(t)
+  const route = await load(Q)
+  cache.stall = true
+  const visitor = visit(route, 'poster.svg')
+  await advance(500)
+  assert.ok(visitor.done)
+  const response = await visitor.response
+  assert.equal(response.status, 200)
+  assert.equal(response.headers.get('content-type'), 'image/svg+xml')
+})
+
 test('after a 429 an instance comes back with one lookup and one new row in hand, not a full allowance', async (t) => {
   const { air, advance } = setup(t)
   const route = await load(Q)
@@ -997,7 +1216,7 @@ test('one request makes at most twenty write calls, however many of its tasks ar
   await advance(40000, 500)
   // ...and from now on every row is refused and has to be sent alone.
   air.respond = null
-  air.scanFields.delete('City')
+  air.scanFields.delete('QR Code')
   const before = air.count('POST', SCANS)
   visit(route, 'poster', { ip: ip(900) }) // the only request alive: every write from here is its own
   await advance(30000)

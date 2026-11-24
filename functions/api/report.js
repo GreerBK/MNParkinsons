@@ -5,6 +5,11 @@
 // the Cloudflare Pages environment. The main AIRTABLE_PAT stays read-only;
 // only this endpoint and /api/submit ever write to Airtable.
 
+import { airtableFetch } from '../_shared/airtable.js'
+import { ACTIVITY_FIELDS, activityPage, isActivityId } from '../_shared/activity-records.js'
+import { airtableBusy, claimFormAttempt, readFormObject } from '../_shared/form-requests.js'
+import { isBareEmail } from '../../src/registrationLinks.js'
+
 const REPORTS_TABLE_ID = 'tbltRoB20Pk8PJcFy' // "Reports" table (not secret)
 
 // Field names in the Reports table — keep in sync if renamed in Airtable.
@@ -18,23 +23,28 @@ const F = {
   submitted: 'Submitted',
 }
 
-const RECORD_ID_RE = /^rec[a-zA-Z0-9]{14,17}$/
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 // Control characters except tab (\t), newline (\n), carriage return (\r)
 const CONTROL_CHARS_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g
 const MAX_BODY_BYTES = 10000
 const MESSAGE_MIN = 5
 const MESSAGE_MAX = 2000
+const RATE_LIMIT_MAX = 10
 
 const NO_STORE = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }
-const reply = (body, status = 200) => Response.json(body, { status, headers: NO_STORE })
+const reply = (body, status = 200, headers) => Response.json(body, { status, headers: { ...NO_STORE, ...headers } })
+const busy = retryAfter => reply(
+  { error: 'The reporting service is busy. Please try again shortly.' },
+  503,
+  { 'Retry-After': retryAfter || '30' },
+)
 
 // Anything other than POST (Pages routes method-specific handlers first).
 export function onRequest() {
   return reply({ error: 'Method not allowed' }, 405)
 }
 
-export async function onRequestPost({ request, env }) {
+export async function onRequestPost(context) {
+  const { request, env } = context
   const readPat = env.AIRTABLE_PAT
   const writePat = env.AIRTABLE_WRITE_PAT
   const baseId = env.AIRTABLE_BASE_ID
@@ -44,15 +54,9 @@ export async function onRequestPost({ request, env }) {
     return reply({ error: 'Server configuration error' }, 500)
   }
 
-  // Parse and bound the body before trusting anything in it.
-  let body
-  try {
-    const raw = await request.text()
-    if (raw.length > MAX_BODY_BYTES) return reply({ error: 'Report is too long.' }, 400)
-    body = JSON.parse(raw)
-  } catch {
-    return reply({ error: 'Invalid request.' }, 400)
-  }
+  const { data: body, tooLong } = await readFormObject(request, MAX_BODY_BYTES)
+  if (tooLong) return reply({ error: 'Report is too long.' }, 413)
+  if (!body) return reply({ error: 'Invalid request.' }, 400)
 
   // Honeypot: humans never see the "website" field. If it's filled in, this
   // is a bot — pretend everything worked so it doesn't try harder.
@@ -60,11 +64,11 @@ export async function onRequestPost({ request, env }) {
     return reply({ ok: true }, 201)
   }
 
-  const activityId = String(body.activityId || '')
-  if (!RECORD_ID_RE.test(activityId)) return reply({ error: 'Invalid activity.' }, 400)
+  const activityId = body.activityId
+  if (typeof activityId !== 'string' || !isActivityId(activityId)) return reply({ error: 'Invalid activity.' }, 400)
 
   // Strip control characters but keep tabs/newlines (multi-line notes are fine).
-  const message = String(body.message || '').replace(CONTROL_CHARS_RE, '').trim()
+  const message = typeof body.message === 'string' ? body.message.replace(CONTROL_CHARS_RE, '').trim() : ''
   if (message.length < MESSAGE_MIN) {
     return reply({ error: 'Please tell us a little about what is wrong.' }, 400)
   }
@@ -72,8 +76,8 @@ export async function onRequestPost({ request, env }) {
     return reply({ error: `Please keep your note under ${MESSAGE_MAX} characters.` }, 400)
   }
 
-  const email = String(body.email || '').trim()
-  if (email && (email.length > 254 || !EMAIL_RE.test(email))) {
+  const email = typeof body.email === 'string' ? body.email.trim() : ''
+  if ((body.email != null && typeof body.email !== 'string') || (email && !isBareEmail(email))) {
     return reply({ error: 'That email address does not look right — please check it (or leave it blank).' }, 400)
   }
 
@@ -81,25 +85,28 @@ export async function onRequestPost({ request, env }) {
     // The site works without the write token; reporting just isn't live yet.
     return reply({ error: 'Reporting is not set up yet. Please try again later.' }, 503)
   }
-
-  // Confirm the activity really exists and is publicly listed before
-  // accepting a report about it (also blocks spamming with made-up IDs).
-  let activityName = ''
-  try {
-    const res = await fetch(
-      `https://api.airtable.com/v0/${baseId}/${activitiesTableId}/${activityId}`,
-      { headers: { Authorization: `Bearer ${readPat}` } }
+  const permitted = await claimFormAttempt(context, 'report', RATE_LIMIT_MAX)
+  if (permitted === undefined) return busy('5')
+  if (!permitted) {
+    return reply(
+      { error: "You've sent several reports recently. Please wait an hour and try again." },
+      429,
+      { 'Retry-After': '3600' },
     )
-    // Only a definitive "no such record" means the activity doesn't exist;
-    // anything else (rate limit, outage) shouldn't reject a genuine report.
-    if (res.status === 404 || res.status === 403) return reply({ error: 'Activity not found.' }, 404)
-    if (!res.ok) {
-      return reply({ error: 'Could not reach the activity database. Please try again shortly.' }, 502)
-    }
-    const record = await res.json()
-    if (record?.fields?.['Status'] !== 'Active') return reply({ error: 'Activity not found.' }, 404)
-    activityName = String(record?.fields?.['Activity Name'] || 'Unknown activity')
-  } catch {
+  }
+
+  // Use a table-scoped search. Airtable's direct record lookup can also
+  // find records in other tables in the same base.
+  let activityName
+  try {
+    const { records } = await activityPage(env, {
+      id: activityId,
+      fields: [ACTIVITY_FIELDS.name, ACTIVITY_FIELDS.status],
+    })
+    if (!records.length) return reply({ error: 'Activity not found.' }, 404)
+    activityName = String(records[0].fields[ACTIVITY_FIELDS.name] || 'Unknown activity')
+  } catch (error) {
+    if (airtableBusy(error.status)) return busy(error.retryAfter)
     return reply({ error: 'Could not reach the activity database. Please try again shortly.' }, 502)
   }
 
@@ -118,7 +125,7 @@ export async function onRequestPost({ request, env }) {
   if (email) fields[F.email] = email
 
   try {
-    const res = await fetch(`https://api.airtable.com/v0/${baseId}/${REPORTS_TABLE_ID}`, {
+    const res = await airtableFetch(env, `https://api.airtable.com/v0/${baseId}/${REPORTS_TABLE_ID}`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${writePat}`,
@@ -126,6 +133,7 @@ export async function onRequestPost({ request, env }) {
       },
       body: JSON.stringify({ records: [{ fields }] }),
     })
+    if (airtableBusy(res.status)) return busy(res.headers.get('Retry-After'))
     if (!res.ok) {
       return reply({ error: 'Could not save your report. Please try again shortly.' }, 502)
     }

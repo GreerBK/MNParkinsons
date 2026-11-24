@@ -8,6 +8,7 @@
 // mocked time, which makes minutes of waiting take milliseconds and makes
 // the order of events exact.
 
+import { registerHooks } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -43,9 +44,24 @@ export const ANDROID =
   'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36'
 export const HTML = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
 
-// A fresh copy of a function module: its own memory, like a new server instance.
-export function load(relative) {
-  return import(`${pathToFileURL(path.join(repo, relative)).href}?copy=${++copies}`)
+// The QR handler and middleware both keep isolate-local state. Use the
+// same isolated module graph for both when loading the handler.
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    const resolved = nextResolve(specifier, context)
+    if (specifier !== '../api/_middleware.js' || !context.parentURL) return resolved
+    const copy = new URL(context.parentURL).searchParams.get('copy')
+    return copy ? { ...resolved, url: `${resolved.url}?copy=${copy}` } : resolved
+  },
+})
+
+export function load(relative, copy = ++copies) {
+  return import(`${pathToFileURL(path.join(repo, relative)).href}?copy=${copy}`)
+}
+
+export function loadQrWithMiddleware() {
+  const copy = ++copies
+  return Promise.all([load('functions/q/[code].js', copy), load('functions/api/_middleware.js', copy)])
 }
 
 // Mock the clock and install the pretend Airtable and edge cache.
@@ -103,11 +119,12 @@ export function visit(route, code, options = {}) {
   const request = new Request(`https://${host}/q/${code}`, { method, headers: all })
   request.cf = cf
   const background = []
-  const visitor = { background, done: false, response: null }
+  const visitor = { background, done: false, response: null, startedAt: Date.now() }
   visitor.response = Promise.resolve(
     route.onRequest({ request, env, params: { code }, waitUntil: (promise) => background.push(promise) })
   ).then((response) => {
     visitor.done = true
+    visitor.elapsed = Date.now() - visitor.startedAt
     return response
   })
   return visitor
@@ -127,10 +144,13 @@ function pretendAirtable(latency) {
     other: [], // rows written to any other table
     calls: [], // { at, method, table, body, auth, status }
     codeFields: new Set(['Name', 'Code', 'Destination', 'Notes']),
-    scanFields: new Set(['Scan', 'Time', 'QR Code', 'City', 'Region', 'Country', 'Likely bot', 'Visitor']),
+    scanFields: new Set(['Scan', 'Time', 'QR Code']),
     // respond(call) may return { status }, { error: true }, { hang: true },
     // { hang: true, deaf: true } (ignores cancellation, like a request the
-    // platform has stopped listening to), and/or { latency }.
+    // platform has stopped listening to), and/or { latency }. A write may
+    // commit before an ambiguous failure, and a read can capture a snapshot
+    // before the simulated transport delay.
+    ambiguousScans: [],
     respond: null,
     limiter: false, // enforce 5 requests a second, then 30 seconds of 429
     lockedUntil: 0,
@@ -254,6 +274,11 @@ function pretendAirtable(latency) {
         air.recent.push(call.at)
       }
     }
+    const snapshot = plan.snapshot ? handle(call) : null
+    if (plan.commit && call.table === SCANS && call.method === 'POST') {
+      const committed = handle(call)
+      if (committed.status === 200) air.ambiguousScans.push(...committed.body.records)
+    }
     return new Promise((resolve, reject) => {
       const cancelled = () => Object.assign(new Error('This operation was aborted'), { name: 'AbortError' })
       const signal = plan.deaf ? null : init.signal
@@ -275,7 +300,7 @@ function pretendAirtable(latency) {
           call.status = 'error'
           return reject(new TypeError('fetch failed'))
         }
-        const { status, body } = plan.status ? reply(plan.status, { error: { type: 'PRETEND' } }) : handle(call)
+        const { status, body } = plan.status ? reply(plan.status, { error: { type: 'PRETEND' } }) : snapshot || handle(call)
         call.status = status
         resolve(new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }))
       }, plan.latency ?? air.latency)

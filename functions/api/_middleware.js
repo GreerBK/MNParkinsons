@@ -1,8 +1,8 @@
 // Traffic log for every /api/* request. Each request records one row in the
 // "API Log" Airtable table so traffic is visible next to the site's data.
 // Page views themselves are static files that never reach a Function — those
-// are covered by Cloudflare Web Analytics; this log answers "who is calling
-// the API, from where, for what, and did it work".
+// are covered by Cloudflare Web Analytics. This log measures endpoint health,
+// broad search-filter use, and popular activity pages.
 //
 // Logging must NEVER break, slow, or alter an API response — and because
 // Airtable allows only ~5 requests/second PER BASE (shared with the real API
@@ -30,8 +30,11 @@
 // isolate is evicted are lost without a marker, though — this is a traffic
 // log, not an audit trail.
 //
-// Privacy: no IP addresses and no request bodies are ever logged — only
-// coarse Cloudflare geo (country/region/city), the URL, and the user agent.
+// Store endpoint templates and approved filter labels. Request details that
+// could identify a visitor are used only in memory where needed.
+
+import { airtableFetch } from '../_shared/airtable.js'
+import { APPROVED_FILTER_OPTIONS } from '../_shared/activity-schema.js'
 
 const LOG_TABLE_ID = 'tblwtk9Q0bfg8uAYG' // "API Log" table (not secret)
 
@@ -51,19 +54,12 @@ const F = {
   time: 'Time',
   method: 'Method',
   path: 'Path',
-  query: 'Query',
   status: 'Status',
   duration: 'Duration (ms)',
-  country: 'Country',
-  region: 'Region',
-  city: 'City',
-  userAgent: 'User agent',
-  referer: 'Referer',
   likelyBot: 'Likely bot',
   verifiedBot: 'Verified bot',
   activity: 'Activity', // link to the viewed activity → powers per-activity view counts
   filtersUsed: 'Filters used', // one multi-select chip per applied finder filter
-  visitor: 'Visitor', // anonymous daily-rotating hash → unique-visitor counts
 }
 
 // Finder filter params (as sent to /api/activities) → chip label prefixes.
@@ -71,17 +67,15 @@ const F = {
 // so a chart on that field counts every filter individually even when one
 // request applies several at once.
 const FILTER_PARAMS = [
-  ['type', 'Type'],
-  ['intensity', 'Intensity'],
-  ['cost', 'Cost'],
-  ['format', 'Format'],
-  ['daysOfWeek', 'Day'],
+  ['type', 'Type', APPROVED_FILTER_OPTIONS.activityType],
+  ['intensity', 'Intensity', APPROVED_FILTER_OPTIONS.intensity],
+  ['cost', 'Cost', APPROVED_FILTER_OPTIONS.cost],
+  ['format', 'Format', APPROVED_FILTER_OPTIONS.format],
+  ['daysOfWeek', 'Day', APPROVED_FILTER_OPTIONS.daysOfWeek],
 ]
 const MAX_FILTER_CHIPS = 8
-// The flush writes with typecast:true so not-yet-seen filter values become
-// new chips automatically — this pattern keeps hand-crafted URL junk from
-// minting garbage chips. Values that fail it are simply not recorded.
-const CHIP_VALUE_RE = /^[\w /:'&().,-]{1,120}$/
+const ENDPOINTS = new Set(['/api/activities', '/api/filter-options', '/api/report', '/api/submit'])
+const METHODS = new Set(['GET', 'HEAD', 'POST', 'OPTIONS'])
 
 // An activity-detail request, e.g. /api/activity/recAbC123… — capturing the
 // record ID lets the log row link to the Activities table.
@@ -90,10 +84,6 @@ const ACTIVITY_PATH_RE = /^\/api\/activity\/(rec[a-zA-Z0-9]{14,17})$/
 // Loose heuristic — good enough to separate "people browsing" from "scripts
 // and crawlers" at a glance. An empty user agent is treated as a bot too.
 const BOT_RE = /bot|crawl|spider|slurp|scrape|preview|fetch|monitor|probe|scan|headless|python|curl|wget|httpx|libwww|java\/|go-http/i
-
-// All control characters (a decoded query could smuggle \r\n to fake extra
-// log lines in the cell, so unlike report.js this strips newlines/tabs too).
-const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F]/g
 
 // Isolate-level shared state: requests served by the same isolate pool their
 // rows here. JavaScript's single-threaded event loop makes push/splice safe.
@@ -157,18 +147,8 @@ function logRequest(context, status, durationMs) {
       return
     }
 
-    const fields = buildFields(request, status, durationMs)
-    // The visitor hash needs WebCrypto (async); finish the row, then buffer.
-    const task = visitorHash(env, request)
-      .then((hash) => {
-        if (hash) fields[F.visitor] = hash
-        if (buffer.length >= BUFFER_MAX) {
-          droppedCount++
-          return
-        }
-        buffer.push(fields)
-        return flushSoon(env)
-      })
+    buffer.push(buildFields(request, status, durationMs))
+    const task = flushSoon(env)
     if (typeof context.waitUntil === 'function') context.waitUntil(task)
     else task.catch(() => {})
   } catch {
@@ -176,73 +156,49 @@ function logRequest(context, status, durationMs) {
   }
 }
 
-export function clean(value, max) {
-  return String(value).replace(CONTROL_CHARS_RE, '').slice(0, max)
-}
-
 function buildFields(request, status, durationMs) {
   const url = new URL(request.url)
   const cf = request.cf || {}
   const userAgent = request.headers.get('user-agent') || ''
-  const referer = request.headers.get('referer') || ''
-  // Cloudflare cryptographically verifies major crawlers (Googlebot, Bingbot,
-  // …) and names the category here — unlike the user agent, this can't lie.
-  const verifiedBot = cf.verifiedBotCategory ? String(cf.verifiedBotCategory) : ''
-  const path = clean(url.pathname, 250)
-  // Decode parameter-by-parameter so "q=tai%20chi%26balance" logs readably
-  // but a %26 inside a value can't masquerade as an extra "&" delimiter.
-  const query = [...url.searchParams]
-    .map(([key, value]) => (value === '' ? key : `${key}=${value}`))
-    .join(' & ')
+  const verifiedBot = cf.verifiedBotCategory ? String(cf.verifiedBotCategory).slice(0, 100) : ''
+  const activityView = url.pathname.match(ACTIVITY_PATH_RE)
+  const path = activityView || url.pathname.startsWith('/api/activity/')
+    ? '/api/activity/:id'
+    : ENDPOINTS.has(url.pathname) ? url.pathname : '/api/other'
+  const method = METHODS.has(request.method) ? request.method : 'OTHER'
 
   // CUBOT is a phone brand whose name happens to contain "bot".
   const likelyBot = userAgent === '' || verifiedBot !== '' || BOT_RE.test(userAgent.replace(/cubot/gi, ''))
 
   const fields = {
-    [F.summary]: `${request.method} ${path} · ${status}`,
+    [F.summary]: `${method} ${path} · ${status}`,
     [F.time]: new Date().toISOString(),
-    [F.method]: request.method,
+    [F.method]: method,
     [F.path]: path,
     [F.status]: status,
     [F.duration]: Math.max(0, Math.round(durationMs)),
     [F.likelyBot]: likelyBot,
   }
-  // A person successfully viewed an activity page — link the row to that
-  // activity so its "Views (last 7 days)" count picks it up. The 200 check
-  // guarantees the record exists (the route just fetched it), so the link
-  // can't make Airtable reject the batch.
-  const activityView = url.pathname.match(ACTIVITY_PATH_RE)
-  if (activityView && status === 200 && !likelyBot) fields[F.activity] = [activityView[1]]
-  // Record which finder filters were applied (activities endpoint only).
-  if (url.pathname === '/api/activities') {
+  if (activityView && method === 'GET' && status === 200 && !likelyBot) fields[F.activity] = [activityView[1]]
+  if (path === '/api/activities' && method === 'GET') {
     const chips = new Set()
-    for (const [param, label] of FILTER_PARAMS) {
-      for (const value of url.searchParams.getAll(param)) {
-        const v = clean(value, 120).trim()
-        if (v && CHIP_VALUE_RE.test(v) && chips.size < MAX_FILTER_CHIPS) {
-          chips.add(`${label}: ${v}`)
-        }
+    if (url.searchParams.get('q')?.trim()) chips.add('Keyword search')
+    for (const [param, label, options] of FILTER_PARAMS) {
+      const applied = new Set(url.searchParams.getAll(param).map(value => value.trim().toLowerCase()))
+      for (const option of options) {
+        if (chips.size >= MAX_FILTER_CHIPS) break
+        if (applied.has(option.toLowerCase())) chips.add(`${label}: ${option}`)
       }
     }
     if (chips.size) fields[F.filtersUsed] = [...chips]
   }
-  if (verifiedBot) fields[F.verifiedBot] = clean(verifiedBot, 100)
-  if (query) fields[F.query] = clean(query, 250)
-  if (cf.country) fields[F.country] = clean(cf.country, 100)
-  if (cf.region) fields[F.region] = clean(cf.region, 100)
-  if (cf.city) fields[F.city] = clean(cf.city, 100)
-  if (userAgent) fields[F.userAgent] = clean(userAgent, 300)
-  if (referer) fields[F.referer] = clean(referer, 300)
+  if (verifiedBot) fields[F.verifiedBot] = verifiedBot
   return fields
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-// Today's date in Minnesota, as "YYYY-MM-DD". The visitor code rotates on
-// this day so it lines up with the log's Central-time Day column; rotating
-// on the UTC day split anyone browsing across 7 pm into two codes. Built
-// from formatToParts so it does not depend on locale formatting; falls back
-// to the UTC date if the runtime ever lacks time-zone data.
+// Today's date in Minnesota, as "YYYY-MM-DD", for QR scan labels.
 export function centralDay(now = new Date()) {
   try {
     const parts = new Intl.DateTimeFormat('en-US', {
@@ -260,35 +216,6 @@ export function centralDay(now = new Date()) {
     // fall through
   }
   return now.toISOString().slice(0, 10)
-}
-
-// Anonymous visitor code, in the style of privacy-first analytics tools:
-// HMAC(secret, ip | user-agent | Central day), truncated. One-way (the
-// address can't be recovered), keyed with a server secret (outsiders can't
-// test guesses), and rotating daily (codes can't link a visitor across
-// days). The raw IP is read here and never stored anywhere.
-export async function visitorHash(env, request) {
-  try {
-    const ip = request.headers.get('CF-Connecting-IP') || ''
-    if (!ip) return ''
-    const day = centralDay()
-    const message = `${ip}|${request.headers.get('user-agent') || ''}|${day}`
-    const encoder = new TextEncoder()
-    const key = await crypto.subtle.importKey(
-      'raw',
-      encoder.encode(env.AIRTABLE_WRITE_PAT), // already-secret server value
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['sign']
-    )
-    const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(message))
-    return [...new Uint8Array(sig)]
-      .slice(0, 6)
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('')
-  } catch {
-    return '' // no hash is always acceptable — the row just has no Visitor
-  }
 }
 
 // Wait for the burst to pool, then flush whenever the pacing rules allow.
@@ -334,20 +261,20 @@ async function flush(env, mayPurge = false) {
   // gap marker was carrying (the marker itself is not a request).
   const lostWithBatch = gap + batch.length - (gap > 0 ? 1 : 0)
   try {
-    const res = await fetch(`https://api.airtable.com/v0/${env.AIRTABLE_BASE_ID}/${LOG_TABLE_ID}`, {
+    const res = await airtableFetch(env, `https://api.airtable.com/v0/${env.AIRTABLE_BASE_ID}/${LOG_TABLE_ID}`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${env.AIRTABLE_WRITE_PAT}`,
         'Content-Type': 'application/json',
       },
-      // typecast lets Airtable auto-create a new "Filters used" chip when a
-      // new Activity Type (etc.) appears, instead of rejecting the batch.
+      // Only static allowlisted labels can become new select options.
       body: JSON.stringify({ records: batch.map((fields) => ({ fields })), typecast: true }),
-    })
-    if (res.status === 429) {
+    }, { maxQueueMs: 300 })
+    if (res.status === 429 || res.headers.get('X-Airtable-Request-Sent') === 'false') {
       // The base is rate limited — stand down entirely and try these rows
       // again after the storm (unless a flood has refilled the buffer).
-      backoffUntil = Date.now() + BACKOFF_MS
+      const retrySeconds = Number(res.headers.get('Retry-After'))
+      backoffUntil = Date.now() + (res.status === 429 ? BACKOFF_MS : Math.max(2000, (retrySeconds || 0) * 1000))
       // The gap marker does not go back in the buffer: there it would look
       // like one more request row, and if this batch were lost on a later
       // attempt the number it carried would vanish. Its count goes back to
@@ -398,9 +325,9 @@ async function purgeOldRows(env) {
     // purge nibbled arbitrary old rows and the oldest lingered for weeks.
     listUrl.searchParams.set('sort[0][field]', F.time)
     listUrl.searchParams.set('sort[0][direction]', 'asc')
-    const res = await fetch(listUrl, {
+    const res = await airtableFetch(env, listUrl, {
       headers: { Authorization: `Bearer ${env.AIRTABLE_PAT}` },
-    })
+    }, { maxQueueMs: 300 })
     if (res.status === 429) {
       // Same rule as the flush: the base is rate limited, stand down.
       backoffUntil = Date.now() + BACKOFF_MS
@@ -417,10 +344,10 @@ async function purgeOldRows(env) {
       await sleep(FLUSH_MIN_GAP_MS) // pace deletes like everything else
       const deleteUrl = new URL(tableUrl)
       for (const id of ids.slice(i, i + 10)) deleteUrl.searchParams.append('records[]', id)
-      const del = await fetch(deleteUrl, {
+      const del = await airtableFetch(env, deleteUrl, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${env.AIRTABLE_WRITE_PAT}` },
-      })
+      }, { maxQueueMs: 300 })
       if (del.status === 429) {
         backoffUntil = Date.now() + BACKOFF_MS
         return

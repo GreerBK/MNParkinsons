@@ -37,10 +37,8 @@
 //      counter that expires by itself, never an "in progress" flag: Cloudflare
 //      can cut a request's background work off at any await.
 //
-// Scans are stored permanently (unlike the API Log, which is pruned), with
-// the same privacy line as the log: coarse Cloudflare geo and the anonymous
-// daily visitor code, never an IP address. Visits that are clearly not a
-// person opening the link (crawlers, link previews, scripts) are redirected
+// Scan rows contain only the QR code and the time of the scan.
+// Visits that are clearly not a person opening the link are redirected
 // but not stored at all. A person's scan is either stored or, when it cannot
 // be, counted in a "NOT RECORDED" row, written where possible by the very
 // request that lost it. What that cannot cover: rows and counts wait in this
@@ -55,7 +53,13 @@
 // a pause in counting rather than anybody's redirect.
 
 import qrcode from 'qrcode-generator'
-import { centralDay, clean, onApiRequest, visitorHash } from '../api/_middleware.js'
+import {
+  airtableFetch,
+  claimAirtableAction,
+  publishAirtableQrObservation,
+  readAirtableQrObservation,
+} from '../_shared/airtable.js'
+import { centralDay, onApiRequest } from '../api/_middleware.js'
 
 // The one address printed codes point at. QR pictures always encode this
 // origin, whatever host the picture was opened on: a code saved from a
@@ -78,10 +82,6 @@ const S = {
   summary: 'Scan',
   time: 'Time',
   code: 'QR Code',
-  city: 'City',
-  region: 'Region',
-  country: 'Country',
-  visitor: 'Visitor',
 }
 
 // The shape doubles as injection-proofing: a code that passes it is safe to
@@ -122,7 +122,7 @@ const POLL_MS = 100
 // ── What we remember about codes ───────────────────────────────────────────
 const FRESH_MS = 300000 // a known row is trusted this long: a changed Destination takes effect within it
 const UNKNOWN_MS = 60000 // "no such code" is trusted this long
-const STALE_SECONDS = 30 * 86400 // how long a known row can still be reused when Airtable is slow or cannot be asked
+const STALE_MS = 30 * 86400000 // maximum age of a remembered destination when Airtable is unavailable
 const MEMO_MAX = 500
 // A row only seconds old may still gain a twin, or lose to one (see
 // createRow). An answer about such a row is trusted only until the row is
@@ -168,6 +168,7 @@ const TWIN_CHECK_NEEDS_MS = 12000 // skip the twin check when the request is sho
 // row instead of each spending three Airtable calls on a row of their own.
 const CLAIM_MS = 7000
 const CLAIM_POLL_MS = 500
+const SHARED_CLAIM_MS = 30000
 // Instances in different data centres cannot see each other's mark. Each
 // waits a random moment, up to this long, before it registers: their calls
 // no longer land in the same second, and the later ones usually find the
@@ -249,7 +250,8 @@ let backoffUntil = 0 // Airtable said 429: no calls of any kind from this route 
 let calmUntil = 0 // after a 429: no fast backlog writing until then
 let nextCallAt = 0 // the next free turn through the Airtable gate
 
-const memo = new Map() // code → { entry, at }: entry is { id, destination } or null ("no such row")
+const memo = new Map() // code → the latest remembered Airtable observation
+const publishing = new Map() // code → when this isolate's edge-cache writer started
 const lookups = new Map() // code → when the latest lookup for it started
 const creating = new Map() // code → when a create for it started
 const forgotten = new Map() // code → when a refused scan last made us doubt what we remember
@@ -288,7 +290,8 @@ export async function onRequest(context) {
   const { request, params } = context
   const url = new URL(request.url)
   const home = new URL('/', url.origin)
-  const deadline = Date.now() + WINDOW_MS
+  const scannedAt = Date.now()
+  const deadline = scannedAt + WINDOW_MS
 
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return new Response('Method not allowed', { status: 405, headers: { Allow: 'GET, HEAD' } })
@@ -320,7 +323,7 @@ export async function onRequest(context) {
       // A remembered row is good enough to redirect with. If the real answer
       // arrives and says the row is gone, there is nothing to count against.
       const id = late ? late.then((real) => (real ? real.id : real === null ? '' : entry.id)) : entry.id
-      recordScan(context, code, id, deadline)
+      recordScan(context, code, id, scannedAt, deadline)
     }
     return redirect(destinationFor(entry.destination, url.origin, code))
   }
@@ -335,7 +338,7 @@ export async function onRequest(context) {
       : late
         ? late.then((real) => (real ? real.id : real === null ? createCode(context, code, deadline) : ''))
         : ''
-  recordScan(context, code, id, deadline)
+  recordScan(context, code, id, scannedAt, deadline)
   return redirect(destinationFor('', url.origin, code))
 }
 
@@ -472,7 +475,8 @@ function isQrPath(pathname) {
 // ── Talking to Airtable ────────────────────────────────────────────────────
 
 // One Airtable call: through the gate, with a hard time limit. Never rejects.
-// Resolves to { status, sent, timedOut, body }.
+// Resolves to { status, sent, timedOut, body, dispatchedAt }. The dispatch
+// timestamp is supplied by the shared gateway when it sent the upstream call.
 //   sent false   nothing went out (rate-limit silence, too busy, out of time)
 //   status 0     it went out and no answer came back: the connection failed
 //                or (timedOut) our time limit passed. Airtable may or may not
@@ -495,11 +499,12 @@ async function airtable(env, token, path, init, deadline) {
   try {
     const headers = { Authorization: `Bearer ${token}` }
     if (init.body) headers['Content-Type'] = 'application/json'
-    const res = await fetch(`https://api.airtable.com/v0/${env.AIRTABLE_BASE_ID}/${path}`, {
+    const res = await airtableFetch(env, `https://api.airtable.com/v0/${env.AIRTABLE_BASE_ID}/${path}`, {
       ...init,
       headers,
       signal: controller.signal,
     })
+    if (res.headers.get('X-Airtable-Request-Sent') === 'false') return unsent
     // The base is rate limited: stand down entirely. Every Airtable call in
     // this file comes through here, so none of them can retry into the storm.
     if (res.status === 429) {
@@ -523,7 +528,9 @@ async function airtable(env, token, path, init, deadline) {
     // A refusal of the request itself (4xx) says nothing about Airtable's health.
     if (res.ok) lastOkAt = Date.now()
     else if (res.status === 429 || res.status >= 500) lastBadAt = Date.now()
-    return { status: res.status, sent: true, timedOut: false, body }
+    const dispatch = Number(res.headers.get('X-Airtable-Dispatch-Ms'))
+    const dispatchedAt = env.AIRTABLE_GATE && Number.isSafeInteger(dispatch) && dispatch > 0 ? dispatch : undefined
+    return { status: res.status, sent: true, timedOut: false, body, dispatchedAt }
   } catch {
     lastBadAt = Date.now()
     return { status: 0, sent: true, timedOut: controller.signal.aborted, body: null }
@@ -543,9 +550,9 @@ async function listCodes(env, formula, max, deadline) {
   const query = new URLSearchParams({ filterByFormula: formula, maxRecords: String(max) })
   query.append('fields[]', CODE_FIELD)
   query.append('fields[]', DESTINATION_FIELD)
-  const { status, body } = await airtable(env, env.AIRTABLE_PAT, `${CODES_TABLE_ID}?${query}`, {}, deadline)
+  const { status, body, dispatchedAt } = await airtable(env, env.AIRTABLE_PAT, `${CODES_TABLE_ID}?${query}`, {}, deadline)
   if (status !== 200 || !body || !Array.isArray(body.records)) return undefined
-  return body.records
+  const rows = body.records
     .map((record) => ({
       id: record.id,
       created: Date.parse(record.createdTime) || 0,
@@ -553,21 +560,21 @@ async function listCodes(env, formula, max, deadline) {
       destination: record.fields?.[DESTINATION_FIELD] || '',
     }))
     .sort((a, b) => a.created - b.created || (a.id < b.id ? -1 : 1))
+  return { rows, dispatchedAt }
 }
 
-// The code's row: { id, destination, created }, null for "no such row", or
-// undefined when Airtable could not be asked.
+// Keep the dispatch time even when Airtable confirms there is no matching row.
 async function fetchCode(env, code, deadline) {
-  const rows = await listCodes(env, codeFormula(code), 5, deadline)
-  if (!rows) return undefined
-  return rows.length ? { id: rows[0].id, destination: rows[0].destination, created: rows[0].created } : null
+  const result = await listCodes(env, codeFormula(code), 5, deadline)
+  if (!result) return undefined
+  return { row: result.rows[0] || null, dispatchedAt: result.dispatchedAt }
 }
 
 // ── Remembering answers ────────────────────────────────────────────────────
 //
-// Two layers: a small map in this instance's memory, and Cloudflare's edge
-// cache, which every instance in the same data centre shares. Each answer
-// carries the time it was learned. Fresh answers are used as they are; an old
+// A small map serves this instance. The gateway orders and shares lookups
+// across instances. An unbound setup uses the local data centre's edge cache.
+// Each answer carries the time it was learned. Fresh answers are used as they are; an old
 // answer about a known row is kept for days as a fallback, so a slow or
 // rate-limited Airtable costs a scan its count at worst, never its redirect.
 // (Best effort: memory goes when the instance does, and the edge cache is per
@@ -576,29 +583,50 @@ async function fetchCode(env, code, deadline) {
 const cacheKeyFor = (code) => `https://qr-lookup.invalid/v2/${code}`
 // `life` is how long this particular answer is trusted, when that is shorter
 // than usual (a row only seconds old); 0 means the usual time.
-const isFresh = (known, now) => now - known.at < (known.life || (known.entry ? FRESH_MS : UNKNOWN_MS))
+const isFresh = (known, now) => now - known.at < (known.freshFor || known.life || (known.entry ? FRESH_MS : UNKNOWN_MS))
+const isRemembered = (known, now) => known?.entry && now - known.at < STALE_MS
 
-function memoSet(code, entry, at, life = 0) {
+function isNewer(answer, previous) {
+  return !previous || answer.observedAt > previous.observedAt ||
+    (answer.observedAt === previous.observedAt && answer.at > previous.at)
+}
+
+function memoSet(code, answer, learnedAt = answer.at) {
+  const freshFor = answer.life ? answer.life + spread() : 0
   memo.delete(code)
-  memo.set(code, { entry, at, life })
+  memo.set(code, { ...answer, freshFor, learnedAt })
   if (memo.size > MEMO_MAX) memo.delete(memo.keys().next().value)
+}
+
+function learnShared(code, shared, learnedAt = shared.at) {
+  if (shared.observedAt < (forgotten.get(code) || 0)) return
+  if (isNewer(shared, memo.get(code))) memoSet(code, shared, learnedAt)
+}
+
+function sharedAnswer(data) {
+  const entry = data?.entry
+  const sound = entry === null || (entry && typeof entry.id === 'string' && typeof entry.destination === 'string')
+  if (!sound || !Number.isFinite(data.at) || Date.now() - data.at >= (entry ? STALE_MS : UNKNOWN_MS)) return undefined
+  const life = Number(data.life) > 0 ? Math.min(Number(data.life), FRESH_MS) : 0
+  const observation = data.started ?? data.observedAt
+  const observedAt = Number.isFinite(observation) ? observation : data.at
+  return { entry, at: data.at, observedAt, life }
 }
 
 async function readEdge(code) {
   try {
     const hit = await caches.default.match(cacheKeyFor(code))
-    if (!hit) return undefined
-    const data = await hit.json()
-    const entry = data ? data.entry : undefined
-    const sound = entry === null || (entry && typeof entry.id === 'string' && typeof entry.destination === 'string')
-    if (sound && typeof data.at === 'number') {
-      const life = Number(data.life) > 0 ? Math.min(Number(data.life), FRESH_MS) : 0
-      return { entry, at: data.at, life }
-    }
+    if (hit) return sharedAnswer(await hit.json())
   } catch {
     // no edge cache (local tests), or an entry we cannot read
   }
   return undefined
+}
+
+async function readShared(env, code) {
+  return env.AIRTABLE_GATE
+    ? sharedAnswer(await readAirtableQrObservation(env, code))
+    : readEdge(code)
 }
 
 // A random extra on a young row's life, different on every instance.
@@ -606,18 +634,54 @@ const spread = () => Math.floor(Math.random() * YOUNG_SPREAD_MS)
 
 // `created` is when the row was made, where that is known: a row only seconds
 // old is remembered for seconds, because a twin may still be on its way.
-function rememberCode(context, code, entry, created = 0) {
-  const at = Date.now()
+async function rememberCode(context, code, entry, observedAt, created = 0) {
+  const at = Math.max(Date.now(), observedAt)
   const life = entry && created && at - created < YOUNG_ROW_MS ? Math.max(1000, created + YOUNG_ROW_MS - at) : 0
-  memoSet(code, entry, at, life ? life + spread() : 0)
+  let answer = { entry, at, observedAt, life }
+  let current = memo.get(code)
+  if (!isNewer(answer, current)) return current.entry
+  if (observedAt < (forgotten.get(code) || 0)) return undefined
+  if (context.env.AIRTABLE_GATE) {
+    const winner = await publishAirtableQrObservation(context.env, code, {
+      entry, at, life, started: observedAt,
+    }, (entry ? STALE_MS : UNKNOWN_MS) / 1000)
+    answer = sharedAnswer(winner) || answer
+    current = memo.get(code)
+    if (!isNewer(answer, current)) return current.entry
+  }
+  if (answer.observedAt < (forgotten.get(code) || 0)) return undefined
+  memoSet(code, answer, Date.now())
+  if (!context.env.AIRTABLE_GATE) keepAlive(context, publishEdgeAnswer(code))
+  return answer.entry
+}
+
+async function publishEdgeAnswer(code) {
+  const started = Date.now()
+  const writer = publishing.get(code)
+  if (writer !== undefined && started - writer < WINDOW_MS) return
+  expire(publishing, WINDOW_MS, started)
+  publishing.set(code, started)
   try {
-    const ttl = entry ? STALE_SECONDS : UNKNOWN_MS / 1000
-    const put = caches.default
-      .put(cacheKeyFor(code), Response.json({ entry, at, life }, { headers: { 'Cache-Control': `public, max-age=${ttl}` } }))
-      .catch(() => {})
-    keepAlive(context, put)
+    // Keep puts in order within the isolate. The active writer also publishes
+    // a newer answer learned while its put was in flight. Across isolates the
+    // comparison is best effort because Cache API has no atomic update.
+    while (publishing.get(code) === started) {
+      const shared = await soon(readEdge(code))
+      if (shared) learnShared(code, shared)
+      const answer = memo.get(code)
+      if (publishing.get(code) !== started || !answer || !isNewer(answer, shared)) return
+      const { entry, at, observedAt, life } = answer
+      const ttl = (entry ? STALE_MS : UNKNOWN_MS) / 1000
+      await caches.default.put(cacheKeyFor(code), Response.json({ entry, at, observedAt, life }, {
+        headers: { 'Cache-Control': `public, max-age=${ttl}` },
+      }))
+      const latest = memo.get(code)
+      if (!latest || !isNewer(latest, answer)) return
+    }
   } catch {
     // no edge cache: the memory map still serves this instance
+  } finally {
+    if (publishing.get(code) === started) publishing.delete(code)
   }
 }
 
@@ -625,7 +689,9 @@ function rememberCode(context, code, entry, created = 0) {
 // row has been deleted and what we remember is out of date, so forget it and
 // let the next scan ask again. Once per FRESH_MS at most: if the refusal has
 // some other cause, asking Airtable on every scan would fix nothing.
-async function doubtCode(code) {
+async function doubtCode(env, code, rejectedId) {
+  const current = memo.get(code)
+  if (current && current.entry?.id !== rejectedId) return
   const now = Date.now()
   const last = forgotten.get(code)
   if (last && now - last < FRESH_MS) return
@@ -633,6 +699,7 @@ async function doubtCode(code) {
   forgotten.set(code, now)
   if (forgotten.size > MEMO_MAX) forgotten.delete(forgotten.keys().next().value)
   memo.delete(code)
+  if (env.AIRTABLE_GATE) return
   try {
     await soon(caches.default.delete(cacheKeyFor(code)).catch(() => {}))
   } catch {
@@ -673,24 +740,21 @@ async function lookupCode(context, code, person, deadline) {
     // An answer another request has just learned is as good as our own
     // (ours, perhaps stuck, carries on behind and is simply remembered).
     if (known && known.at >= started) return { entry: known.entry }
-    if (Date.now() - started >= (known && known.entry ? REMEMBERED_WAIT_MS : LOOKUP_WAIT_MS)) break
+    if (Date.now() - started >= (isRemembered(known, Date.now()) ? REMEMBERED_WAIT_MS : LOOKUP_WAIT_MS)) break
   }
   if (found !== WAITING && found !== undefined) return { entry: found }
   const known = memo.get(code)
-  const remembered = known && known.entry ? known.entry : undefined
+  const remembered = isRemembered(known, Date.now()) ? known.entry : undefined
   return found === WAITING ? { entry: remembered, late: answer } : { entry: remembered }
 }
 
 async function findOut(context, code, person, deadline) {
   // Another instance in this data centre may have asked more recently. The
   // read gets a moment and no more; an answer that comes later is still kept.
-  const edge = readEdge(code).then((shared) => {
-    const held = memo.get(code)
-    if (shared && (!held || shared.at > held.at)) {
-      memoSet(code, shared.entry, shared.at, shared.life ? shared.life + spread() : 0)
-    }
+  const sharedLookup = readShared(context.env, code).then((shared) => {
+    if (shared) learnShared(code, shared)
   })
-  await soon(edge)
+  await soon(sharedLookup)
   const known = memo.get(code)
   if (known && isFresh(known, Date.now())) return known.entry
   return askAirtable(context, code, person, deadline)
@@ -720,11 +784,14 @@ function askAirtable(context, code, person, deadline) {
   }
   expire(lookups, LOOKUP_STALE_MS, now)
   lookups.set(code, now)
-  return fetchCode(context.env, code, deadline).then((found) => {
-    const entry = found ? { id: found.id, destination: found.destination } : found
-    if (entry !== undefined) rememberCode(context, code, entry, found ? found.created : 0)
+  return fetchCode(context.env, code, deadline).then(async (found) => {
+    const row = found?.row
+    const entry = row ? { id: row.id, destination: row.destination } : null
+    const remembered = found
+      ? await rememberCode(context, code, entry, found.dispatchedAt ?? now, row?.created)
+      : undefined
     if (lookups.get(code) === now) lookups.delete(code)
-    if (entry !== undefined) return entry
+    if (found) return remembered
     // Our own call failed; another request's may have got through meanwhile.
     const known = memo.get(code)
     return known && known.at >= now ? known.entry : undefined
@@ -740,7 +807,7 @@ function askAirtable(context, code, person, deadline) {
 async function follow(flights, code, since, until, needRow) {
   while (Date.now() < until) {
     const known = memo.get(code)
-    if (known && known.at >= since && (known.entry || !needRow)) return known.entry
+    if (known && known.learnedAt >= since && (known.entry || !needRow)) return known.entry
     if (!flights.has(code)) break // whoever was working on it finished without an answer
     await sleep(POLL_MS)
   }
@@ -773,8 +840,13 @@ async function createCode(context, code, deadline) {
     expire(creating, CREATE_STALE_MS, now)
     creating.set(code, now)
     try {
-      // Another instance in this data centre may be registering this very
-      // code right now (a QR on a slide, a room of phones): use its row.
+      if (env.AIRTABLE_GATE && !take(createRation, now)) return ''
+      const claimed = await claimAirtableAction(env, 'qr-creation', code, SHARED_CLAIM_MS)
+      if (claimed === false) return await findRegisteredCode(context, code, deadline)
+      if (claimed === true) return await createRow(context, code, deadline, false)
+      if (claimed !== null) return ''
+
+      // Without the shared gate, coordinate with caches in this data centre.
       const theirs = await awaitClaim(code, deadline)
       if (theirs) return theirs.id
       if (Date.now() < backoffUntil || !take(createRation, Date.now())) return ''
@@ -789,6 +861,25 @@ async function createCode(context, code, deadline) {
     console.warn('qr code create failed', err && err.message)
     return ''
   }
+}
+
+async function findRegisteredCode(context, code, deadline) {
+  const lastCheck = Math.min(Date.now() + CLAIM_MS, deadline - AIRTABLE_TIMEOUT_MS - 250)
+  while (Date.now() < lastCheck) {
+    const shared = await soon(readShared(context.env, code))
+    if (shared?.entry && isFresh(shared, Date.now())) {
+      learnShared(code, shared, Date.now())
+      const id = memo.get(code)?.entry?.id
+      if (id) return id
+    }
+    await sleep(Math.min(CLAIM_POLL_MS, Math.max(0, lastCheck - Date.now())))
+  }
+  const began = Date.now()
+  const found = await fetchCode(context.env, code, deadline)
+  if (!found?.row) return ''
+  const { id, destination, created } = found.row
+  const remembered = await rememberCode(context, code, { id, destination }, found.dispatchedAt ?? began, created)
+  return remembered?.id || ''
 }
 
 // The mark an instance leaves in the edge cache while it registers a code.
@@ -826,12 +917,8 @@ async function awaitClaim(code, deadline) {
     const shared = await soon(readEdge(code))
     const now = Date.now()
     if (shared && shared.entry && isFresh(shared, now)) {
-      // Remember it for what is left of its life, as learned now: requests
-      // on this instance that are waiting for the row look for an answer
-      // newer than their own start.
-      const left = Math.max(1, (shared.life || FRESH_MS) - (now - shared.at))
-      memoSet(code, shared.entry, now, shared.life ? left + spread() : left)
-      return shared.entry
+      learnShared(code, shared, now)
+      return memo.get(code)?.entry
     }
     if (!claimedAt) claimedAt = (await soon(readClaim(code))) || 0
     if (!claimedAt || now - claimedAt >= CLAIM_MS || now + CLAIM_POLL_MS + 1000 > deadline) return undefined
@@ -839,7 +926,7 @@ async function awaitClaim(code, deadline) {
   }
 }
 
-async function createRow(context, code, deadline) {
+async function createRow(context, code, deadline, checkTwins = true) {
   const { env } = context
   // One read answers two questions. Does the row exist after all? ("No such
   // code" may have been a remembered answer, and another instance may have
@@ -848,23 +935,27 @@ async function createRow(context, code, deadline) {
   // the thing that keeps made-up addresses from filling the base. It is a
   // close count, not an exact one: instances that check at the same moment
   // can each add a row.
+  let observedAt = Date.now()
   const recently = `DATETIME_DIFF(NOW(),CREATED_TIME(),'hours')<24`
   const seen = await listCodes(env, `OR(${codeFormula(code)},${recently})`, 100, deadline)
   if (!seen) return ''
-  let existing = seen.find((row) => row.code === code)
-  if (!existing && seen.length >= 100) {
+  observedAt = seen.dispatchedAt ?? observedAt
+  let existing = seen.rows.find((row) => row.code === code)
+  if (!existing && seen.rows.length >= 100) {
     // The list is cut at 100 rows. On a day with that many new rows (an
     // import, say) the code's own row may be past the cut: ask for it alone.
+    observedAt = Date.now()
     const own = await listCodes(env, codeFormula(code), 5, deadline)
     if (!own) return ''
-    existing = own[0]
+    observedAt = own.dispatchedAt ?? observedAt
+    existing = own.rows[0]
   }
   if (existing) {
-    rememberCode(context, code, { id: existing.id, destination: existing.destination }, existing.created)
-    return existing.id
+    const remembered = await rememberCode(context, code, { id: existing.id, destination: existing.destination }, observedAt, existing.created)
+    return remembered?.id || ''
   }
   const dayAgo = Date.now() - 86400000
-  if (seen.filter((row) => row.created > dayAgo).length >= DAILY_CREATE_MAX) {
+  if (seen.rows.filter((row) => row.created > dayAgo).length >= DAILY_CREATE_MAX) {
     ceilingUntil = Date.now() + CEILING_MEMORY_MS
     return ''
   }
@@ -896,15 +987,19 @@ async function createRow(context, code, deadline) {
   // next lookup instead of standing for five minutes.
   const madeAt = Date.now()
   let winner = { id, destination: '' }
-  let checked = false
-  if (deadline - Date.now() > TWIN_CHECK_NEEDS_MS) {
+  observedAt = made.dispatchedAt ?? madeAt
+  if (checkTwins && deadline - Date.now() > TWIN_CHECK_NEEDS_MS) {
     await sleep(TWIN_CHECK_DELAY_MS)
-    const rows = await listCodes(env, codeFormula(code), 5, deadline)
-    checked = Boolean(rows)
-    if (rows && rows.length > 1) winner = { id: rows[0].id, destination: rows[0].destination }
+    const checkStarted = Date.now()
+    const checked = await listCodes(env, codeFormula(code), 5, deadline)
+    const row = checked?.rows[0]
+    if (row) {
+      observedAt = checked.dispatchedAt ?? checkStarted
+      winner = { id: row.id, destination: row.destination }
+    }
   }
-  rememberCode(context, code, winner, checked ? madeAt : Date.now())
-  return winner.id
+  const remembered = await rememberCode(context, code, winner, observedAt, madeAt)
+  return remembered?.id || ''
 }
 
 // ── Recording a scan ───────────────────────────────────────────────────────
@@ -956,22 +1051,14 @@ function budgetFor(context) {
 // must never get between a visitor and the page they scanned for.
 // `id` may be a promise (a row still being looked up or created); an empty
 // ID means there is no row to count against.
-function recordScan(context, code, id, deadline) {
+function recordScan(context, code, id, scannedAt, deadline) {
   try {
     const { env, request } = context
     if (!env.AIRTABLE_WRITE_PAT || !env.AIRTABLE_BASE_ID) return
 
-    const cf = request.cf || {}
-    const fields = {
-      [S.summary]: `${code} · ${centralDay()}`,
-      [S.time]: new Date().toISOString(),
-    }
-    if (cf.city) fields[S.city] = clean(cf.city, 100)
-    if (cf.region) fields[S.region] = clean(cf.region, 100)
-    if (cf.country) fields[S.country] = clean(cf.country, 100)
     const address = addressKey(request)
 
-    const task = Promise.all([visitorHash(env, request), id]).then(([hash, recordId]) => {
+    const task = Promise.resolve(id).then((recordId) => {
       // No row to count against (Airtable could not be asked, or the code
       // could not be registered), or over a limit: not stored, but counted,
       // so a NOT RECORDED row can say roughly how many went missing. This
@@ -980,8 +1067,12 @@ function recordScan(context, code, id, deadline) {
         lose(1)
         return flushSoon(context, deadline)
       }
-      fields[S.code] = [recordId]
-      if (hash) fields[S.visitor] = hash
+      const time = new Date(scannedAt)
+      const fields = {
+        [S.summary]: `${code} · ${centralDay(time)}`,
+        [S.time]: time.toISOString(),
+        [S.code]: [recordId],
+      }
       buffer.push({ fields, code })
       return flushSoon(context, deadline)
     })
@@ -1213,7 +1304,7 @@ async function runFlush(env, deadline, budget) {
       } else if (rows.length === 1) {
         if (withMarker) noteNotSaved()
         lose(1)
-        await doubtCode(rows[0].code)
+        await doubtCode(env, rows[0].code, rows[0].fields[S.code][0])
       } else {
         // The note alone was refused. It was not saved, so nothing can be
         // repeated; but it stays held, so it is not tried again for ten
@@ -1243,7 +1334,7 @@ async function qrImage(context, text, code, type) {
   let cache = null
   try {
     cache = caches.default
-    const hit = await cache.match(cacheKey)
+    const hit = await soon(cache.match(cacheKey))
     if (hit) return hit
   } catch {
     cache = null
