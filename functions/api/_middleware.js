@@ -89,7 +89,7 @@ const ACTIVITY_PATH_RE = /^\/api\/activity\/(rec[a-zA-Z0-9]{14,17})$/
 
 // Loose heuristic — good enough to separate "people browsing" from "scripts
 // and crawlers" at a glance. An empty user agent is treated as a bot too.
-export const BOT_RE = /bot|crawl|spider|slurp|scrape|preview|fetch|monitor|probe|scan|headless|python|curl|wget|httpx|libwww|java\/|go-http/i
+const BOT_RE = /bot|crawl|spider|slurp|scrape|preview|fetch|monitor|probe|scan|headless|python|curl|wget|httpx|libwww|java\/|go-http/i
 
 // All control characters (a decoded query could smuggle \r\n to fake extra
 // log lines in the cell, so unlike report.js this strips newlines/tabs too).
@@ -103,6 +103,15 @@ let backoffUntil = 0
 let droppedCount = 0 // requests we couldn't log — reported via a LOG GAP row
 let purgeBacklog = false // last prune found a full page: keep pruning until clear
 let lastPurgeAt = 0 // start of the last prune; also keeps prunes from overlapping
+let shedFlusherAt = 0 // last time a shed row restarted the flusher (a time, not a flag)
+
+// Other functions can ask to be nudged whenever an API request passes
+// through. The QR scan logger uses this: rows it could not write during one
+// request get another chance on the visitor's next ordinary page load.
+const nudges = []
+export function onApiRequest(fn) {
+  nudges.push(fn)
+}
 
 export async function onRequest(context) {
   const started = Date.now()
@@ -121,11 +130,30 @@ export async function onRequest(context) {
 
 // Buffer the row and schedule a delayed flush, without ever throwing.
 function logRequest(context, status, durationMs) {
+  for (const nudge of nudges) {
+    try {
+      nudge(context)
+    } catch {
+      // someone else's housekeeping must never affect logging or the response
+    }
+  }
   try {
     const { env, request } = context
     if (!env.AIRTABLE_WRITE_PAT || !env.AIRTABLE_BASE_ID) return
     if (buffer.length >= BUFFER_MAX) {
       droppedCount++ // flood — shed this row, but remember it happened
+      // Shedding must not leave the buffer with nobody to empty it. After a
+      // 429 every waiting flusher gives up before the 60 s backoff ends; if
+      // the buffer filled in the meantime, each later request landed here
+      // and returned, and this instance never logged again. So make sure a
+      // flusher is alive, at most one per flusher lifetime.
+      const now = Date.now()
+      if (now - shedFlusherAt >= 4 * FLUSH_DELAY_MS) {
+        shedFlusherAt = now
+        const restart = flushSoon(env)
+        if (typeof context.waitUntil === 'function') context.waitUntil(restart)
+        else restart.catch(() => {})
+      }
       return
     }
 
@@ -167,7 +195,8 @@ function buildFields(request, status, durationMs) {
     .map(([key, value]) => (value === '' ? key : `${key}=${value}`))
     .join(' & ')
 
-  const likelyBot = userAgent === '' || verifiedBot !== '' || BOT_RE.test(userAgent)
+  // CUBOT is a phone brand whose name happens to contain "bot".
+  const likelyBot = userAgent === '' || verifiedBot !== '' || BOT_RE.test(userAgent.replace(/cubot/gi, ''))
 
   const fields = {
     [F.summary]: `${request.method} ${path} · ${status}`,
@@ -301,6 +330,9 @@ async function flush(env, mayPurge = false) {
   const batch = buffer.splice(0, gap > 0 ? 9 : 10)
   if (gap > 0) batch.unshift(gapFields(gap))
   if (batch.length === 0) return
+  // If this batch is lost, what goes with it is its rows plus the count its
+  // gap marker was carrying (the marker itself is not a request).
+  const lostWithBatch = gap + batch.length - (gap > 0 ? 1 : 0)
   try {
     const res = await fetch(`https://api.airtable.com/v0/${env.AIRTABLE_BASE_ID}/${LOG_TABLE_ID}`, {
       method: 'POST',
@@ -316,14 +348,20 @@ async function flush(env, mayPurge = false) {
       // The base is rate limited — stand down entirely and try these rows
       // again after the storm (unless a flood has refilled the buffer).
       backoffUntil = Date.now() + BACKOFF_MS
-      if (buffer.length + batch.length <= BUFFER_MAX) buffer.unshift(...batch)
-      else droppedCount += batch.length
+      // The gap marker does not go back in the buffer: there it would look
+      // like one more request row, and if this batch were lost on a later
+      // attempt the number it carried would vanish. Its count goes back to
+      // the counter, and the next flush writes a fresh marker.
+      const rows = gap > 0 ? batch.slice(1) : batch
+      droppedCount += gap
+      if (buffer.length + rows.length <= BUFFER_MAX) buffer.unshift(...rows)
+      else droppedCount += rows.length
       return
     }
     if (!res.ok) {
       // Airtable rejected the batch (bad token, schema drift, …) — the rows
       // are gone; make sure the loss shows up in the next gap marker.
-      droppedCount += batch.length
+      droppedCount += lostWithBatch
       return
     }
     // Only prune when the base just proved healthy, so the purge's extra
@@ -332,7 +370,7 @@ async function flush(env, mayPurge = false) {
     // clear (paced by PURGE_MIN_GAP_MS), so a backlog cannot build up again.
     if (mayPurge && (purgeBacklog || Math.random() < PURGE_PROBABILITY)) await purgeOldRows(env)
   } catch {
-    droppedCount += batch.length // network failure — batch lost
+    droppedCount += lostWithBatch // network failure — batch lost
   }
 }
 

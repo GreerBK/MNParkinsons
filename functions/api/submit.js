@@ -53,10 +53,13 @@ const INTENSITIES = ['Light', 'Moderate', 'High']
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 const COST_CATEGORIES = ['Free', 'Paid', 'Free Trial', 'Fee']
 
-// Best-effort per-IP throttle: max submissions per IP per rolling window.
-// Uses the edge cache, so counts are per Cloudflare location and can evict
-// early — a speed bump for abusive scripts, not a hard guarantee.
-const RATE_LIMIT_MAX = 10
+// Best-effort per-IP throttle: max submissions per IP per hour (the hour
+// starts at the first one). Uses the edge cache, so counts are per Cloudflare
+// location and can evict early — a speed bump for abusive scripts, not a
+// hard guarantee. One address is not one person: everyone on a venue's or a
+// clinic's Wi-Fi shares one, and a tracked QR code can send a whole room
+// here at once, so the limit has to leave room for that.
+const RATE_LIMIT_MAX = 50
 const RATE_LIMIT_WINDOW_S = 3600
 
 const NO_STORE = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }
@@ -160,10 +163,6 @@ export async function onRequestPost(context) {
     return reply({ ok: true }, 201)
   }
 
-  if (await isRateLimited(request, context)) {
-    return reply({ error: "You've sent quite a few submissions recently. Please wait an hour and try again." }, 429)
-  }
-
   // ── Required fields ──────────────────────────
   const name = clean(body.name).slice(0, 200)
   if (name.length < 2) {
@@ -259,6 +258,12 @@ export async function onRequestPost(context) {
   if (!writePat) {
     // The site works without the write token; submissions just aren't live yet.
     return reply({ error: 'Submissions are not set up yet. Please try again later.' }, 503)
+  }
+
+  // Counted here, after validation: a form that bounced on a typo never
+  // reaches Airtable, so it should not use up the address's allowance.
+  if (await isRateLimited(request, context)) {
+    return reply({ error: "You've sent quite a few submissions recently. Please wait an hour and try again." }, 429)
   }
 
   const now = new Date()
