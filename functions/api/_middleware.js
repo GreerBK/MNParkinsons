@@ -89,7 +89,7 @@ const ACTIVITY_PATH_RE = /^\/api\/activity\/(rec[a-zA-Z0-9]{14,17})$/
 
 // Loose heuristic — good enough to separate "people browsing" from "scripts
 // and crawlers" at a glance. An empty user agent is treated as a bot too.
-export const BOT_RE = /bot|crawl|spider|slurp|scrape|preview|fetch|monitor|probe|scan|headless|python|curl|wget|httpx|libwww|java\/|go-http/i
+const BOT_RE = /bot|crawl|spider|slurp|scrape|preview|fetch|monitor|probe|scan|headless|python|curl|wget|httpx|libwww|java\/|go-http/i
 
 // All control characters (a decoded query could smuggle \r\n to fake extra
 // log lines in the cell, so unlike report.js this strips newlines/tabs too).
@@ -103,6 +103,15 @@ let backoffUntil = 0
 let droppedCount = 0 // requests we couldn't log — reported via a LOG GAP row
 let purgeBacklog = false // last prune found a full page: keep pruning until clear
 let lastPurgeAt = 0 // start of the last prune; also keeps prunes from overlapping
+let shedFlusherAt = 0 // last time a shed row restarted the flusher (a time, not a flag)
+
+// Other functions can ask to be nudged whenever an API request passes
+// through. The QR scan logger uses this: rows it could not write during one
+// request get another chance on the visitor's next ordinary page load.
+const nudges = []
+export function onApiRequest(fn) {
+  nudges.push(fn)
+}
 
 export async function onRequest(context) {
   const started = Date.now()
@@ -121,11 +130,30 @@ export async function onRequest(context) {
 
 // Buffer the row and schedule a delayed flush, without ever throwing.
 function logRequest(context, status, durationMs) {
+  for (const nudge of nudges) {
+    try {
+      nudge(context)
+    } catch {
+      // someone else's housekeeping must never affect logging or the response
+    }
+  }
   try {
     const { env, request } = context
     if (!env.AIRTABLE_WRITE_PAT || !env.AIRTABLE_BASE_ID) return
     if (buffer.length >= BUFFER_MAX) {
       droppedCount++ // flood — shed this row, but remember it happened
+      // Shedding must not leave the buffer with nobody to empty it. After a
+      // 429 every waiting flusher gives up before the 60 s backoff ends; if
+      // the buffer filled in the meantime, each later request landed here
+      // and returned, and this instance never logged again. So make sure a
+      // flusher is alive, at most one per flusher lifetime.
+      const now = Date.now()
+      if (now - shedFlusherAt >= 4 * FLUSH_DELAY_MS) {
+        shedFlusherAt = now
+        const restart = flushSoon(env)
+        if (typeof context.waitUntil === 'function') context.waitUntil(restart)
+        else restart.catch(() => {})
+      }
       return
     }
 

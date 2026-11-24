@@ -110,7 +110,7 @@ Review workflow, all inside Airtable:
 2. Set `Status = Approved`. The **"Publish approved submission"** automation copies the row into Activities as an Active activity (the Geocode automation then fills Latitude/Longitude) and flips the submission to `Added`.
 3. Or set `Status = Rejected` to decline. **Submitter Name/Email** are only for follow-up questions and are never copied to Activities.
 
-The endpoint reuses the `AIRTABLE_WRITE_PAT` variable set up for reporting (above). Spam protection: a hidden honeypot field, strict length limits and allow-lists, and best-effort per-IP rate limiting at the edge.
+The endpoint reuses the `AIRTABLE_WRITE_PAT` variable set up for reporting (above). Spam protection: a hidden honeypot field, strict length limits and allow-lists, and best-effort per-IP rate limiting at the edge (50 submissions an hour per network address: enough for a room of people on one venue Wi-Fi, since an address is not a person).
 
 ## Tracked QR codes
 
@@ -119,21 +119,31 @@ Printed QR codes (flyers, posters, table tents) point at `https://mnparkinsons.o
 **Making a code** (nothing to set up, no deploy):
 
 1. Make up a short code for the place it will be printed, e.g. `udall-flyer`: lowercase letters, numbers and dashes, 40 characters at most. One code per source you want to tell apart; every copy of the same flyer shares one.
-2. Open `https://mnparkinsons.org/q/udall-flyer.png` and save the picture (a ~1000 px PNG). Swap `.png` for `.svg` for a vector that stays sharp at poster size.
+2. Open `https://mnparkinsons.org/q/udall-flyer.png` and save the picture (a ~1000 px PNG). Swap `.png` for `.svg` for a vector that stays sharp at poster size. The picture always points at mnparkinsons.org, whichever address you opened it on.
+3. Scan it once yourself. That first scan adds the code's row to the **QR Codes** table, so the code is already registered when a whole room points their phones at it.
 
-That is all. The first time a person scans the code, the site adds its row to the **QR Codes** table by itself, and counts from there. Afterwards you can give the row a friendlier `Name`, or set its `Destination` to any page of the site or another `https` address (blank means the home page; changes take effect within about five minutes, even after printing). You can also add the row by hand first if you want a destination from day one. Never change a row's `Code` once it is printed.
+Afterwards you can give the row a friendlier `Name`, or set its `Destination` to any page of the site or another `https` address. Blank means the home page; changes take effect within about five minutes, even after printing. A Destination that is not a usable address (a typo, a bare word) sends people to the home page rather than to an error page. You can also add the row by hand first if you want a destination from day one. Never change a row's `Code` once it is printed.
 
-Because any code works, a mistyped or made-up address scanned by a person becomes a row too. Those are safe to delete. Robots never create rows, and new rows are rationed to a few per minute.
+Because any code works, a mistyped or made-up address opened by a person becomes a row too; those are safe to delete. To keep that from getting out of hand, the table gains at most 20 new rows in any 24 hours (rows added by hand count towards the 20). Past that, a new code still redirects but is not registered until the day has passed, so add its row by hand if you need it sooner.
 
 **Reading the results:**
 
-- Every scan is a row in the **QR Scans** table: time, the code, approximate city/region, a `Likely bot` flag and the anonymous `Visitor` code. Rows are kept permanently (they are few, and nothing prunes them).
-- The **QR Codes** table totals them per code: `Scans` (all time), `Scans (last 7 days)` and `Last scan`. Robots are left out; one person scanning twice counts twice.
+- Every scan is a row in the **QR Scans** table: time, the code, approximate city/region and the anonymous `Visitor` code. Rows are kept permanently; nothing prunes them.
+- The **QR Codes** table totals them per code: `Scans` (all time), `Scans (last 7 days)` and `Last scan` (Central time). One person scanning twice counts twice.
 - The **Weekly QR scan report** automation emails that table every Monday morning. Recipients are the "To" line of its Send email step.
-- A scan lands on the site with `?src=<code>` in the address. That address is the `Referer` of the visit's API calls, and the scan's `Visitor` code matches the API Log's `Visitor` column for the same day, so the API Log shows what people who scanned a given code went on to search for and open.
+- **Who is counted:** only a browser opening the link. Crawlers, uptime checks, scripts and the link previews that chat apps fetch (WhatsApp, Signal, iMessage, Slack and others) are redirected but not stored. The test is a good guess, not a guarantee: a mail security scanner that opens links in a real browser still counts, so treat the count for a link sent by email as an upper limit. For a printed code it is close to exact.
+- **`Visitor`** is the same anonymous daily code the API Log uses, a scramble of network address and browser. It is a hint, not a person: phones with the same browser version on one shared Wi-Fi (an event, a clinic) share a code, and a phone that moves from Wi-Fi to cellular gets a second one. Do not count people with it.
+- A scan lands on the site with `?src=<code>` in the address. That address is the `Referer` of the visit's API calls, and the scan's `Visitor` code matches the API Log's `Visitor` column for the same day, so the API Log shows what visits that began with a given code went on to search for and open. The tag stays in the address bar, so a link copied from there carries it too; the site's own Share button removes it.
+- A row whose `Scan` reads **`NOT RECORDED · about N scans`** is a note, not a scan. It says roughly how many scans could not be stored since the previous note (at most one note every ten minutes). The usual causes are the limits below or an Airtable hiccup.
 - The `Link` column also works as a plain tracked link in an email or a social post.
 
-A scan always reaches the site: a missing token or an Airtable outage still sends the visitor to the home page, just uncounted. Scan rows are written with `AIRTABLE_WRITE_PAT` (no extra setup in Production; Preview deployments without it redirect but do not count). The site reads and writes these two tables by field name, so renaming `Code`, `Destination` or any QR Scans field breaks tracking; adding fields is fine.
+**When Airtable is slow, and limits:**
+
+A scan always reaches the site, within about 2.5 seconds. If Airtable has not answered by then, the visitor is sent to the last destination known for that code (or the home page) and the counting carries on in the background. A missing token or an Airtable outage costs a scan its count at worst, never its redirect.
+
+The route is deliberately frugal with the base's shared limits (5 requests a second, a cap on total records). Each server instance makes at most about three Airtable calls a second from this route, goes silent for half a minute after any rate-limit answer, and rations what it writes: one visitor (network address + browser) can add 150 scans at once and then one every five minutes, one server instance writes at most 600 an hour, and new codes are capped at 20 a day. These are speed bumps, not walls: Cloudflare runs many instances, and a determined flood can still add rows. If that ever happens, a Cloudflare rate-limiting rule on `/q/*` (dashboard → Security → WAF) is the real fix.
+
+Scan rows are written with `AIRTABLE_WRITE_PAT` (no extra setup in Production; Preview deployments without it redirect but do not count). The site reads and writes these two tables by field name: renaming or deleting `Code`, `Destination` or any QR Scans field breaks tracking. `Name` and `Notes` are only filled in on new rows as a convenience; if they are renamed or deleted, new codes still register, just unlabelled. Adding fields is fine.
 
 ## Security & performance
 
@@ -151,3 +161,5 @@ npx wrangler pages dev dist
 ```
 
 Create a `.dev.vars` file (git-ignored) with `AIRTABLE_PAT`, `AIRTABLE_BASE_ID`, and `AIRTABLE_TABLE_ID` so the local API functions can reach Airtable. In production these are set as environment variables in the Cloudflare Pages dashboard.
+
+`npm test` runs the automated tests for the Functions (the QR redirect, the API log and the Submit limit). They use a pretend Airtable and a controlled clock, so they need no network or credentials and finish in a few seconds.

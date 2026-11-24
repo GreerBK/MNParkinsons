@@ -2230,7 +2230,11 @@ function ActivityDetail({ id }) {
   // readers via the live region below.
   const canNativeShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function'
   const handleShare = async () => {
-    const url = window.location.href
+    // A visit that began with a tracked QR code carries ?src=<code> in the
+    // address. That tag describes this visit, not the link being shared.
+    const shareUrl = new URL(window.location.href)
+    shareUrl.searchParams.delete('src')
+    const url = shareUrl.href
     if (canNativeShare) {
       try { await navigator.share({ title: `${a.name} — MN Parkinson's Connect`, url }) } catch {}
       return
