@@ -582,23 +582,6 @@ test('a steady stream is batched, not one write per scan', async (t) => {
   assert.ok(smallestGap(writes) >= 1000)
 })
 
-test('a trickle of scans is pooled into a call every few seconds, not a call a second', async (t) => {
-  const { air, advance } = setup(t)
-  const route = await load(Q)
-  air.addCode('poster')
-  for (let n = 0; n < 25; n++) {
-    visit(route, 'poster', { ip: ip(n) })
-    await advance(1200, 100)
-  }
-  await advance(10000)
-  assert.equal(air.scansFor('poster').length, 25)
-  // Several server instances can each be getting a trickle like this one at
-  // the same moment; a call a second from each would be the base's whole limit.
-  const writes = air.sent('POST', SCANS)
-  assert.ok(writes.length <= 10, `saw ${writes.length} writes`)
-  assert.ok(smallestGap(writes) >= 4000, `at least four seconds apart, saw ${smallestGap(writes)}`)
-})
-
 test('one address repeating a scan is rationed whatever browser it claims, and every scan is stored or noted', async (t) => {
   const { air, advance } = setup(t)
   const route = await load(Q)
@@ -893,15 +876,16 @@ test('a lone scan that cannot be counted is owned up to by its own request, with
   const person = visit(route, 'gala-table')
   await advance(300)
   assert.equal(await where(person), 'https://mnparkinsons.org/?src=gala-table', 'redirected as usual')
-  await advance(14000)
-  assert.equal(air.markers().length, 0, 'not yet: a note waits a quarter of a minute for the rest of a burst')
-  await advance(12000) // still inside the one request's own half minute
+  await advance(9000)
+  assert.equal(air.markers().length, 0, 'not yet: a note waits ten seconds for the rest of a burst')
+  await advance(8000) // still inside the one request's own half minute
   assert.equal(air.rowsFor('gala-table').length, 0)
   assert.equal(air.markers().length, 1)
   assert.equal(air.markers()[0].fields.Scan, 'NOT RECORDED · about 1 scan')
 })
 
 test('a burst that cannot be counted gets one note for all of it, and the ceiling is asked about once', async (t) => {
+  const lookedAtCeiling = (call) => /CREATED_TIME/.test(call.url.search)
   const { air, advance } = setup(t)
   const route = await load(Q)
   for (let n = 0; n < 20; n++) air.addCode(`typed-in-${n}`)
@@ -912,7 +896,10 @@ test('a burst that cannot be counted gets one note for all of it, and the ceilin
   await advance(30000) // nobody comes by afterwards
   assert.equal(air.markers().length, 1, 'one note')
   assert.equal(noted(air), 30, 'covering the whole burst')
-  assert.equal(air.count('GET', CODES), 2, 'one lookup and one look at the ceiling, not one for every scan')
+  const reads = air.sent('GET', CODES)
+  assert.equal(reads.filter(lookedAtCeiling).length, 1, 'one look at the ceiling, not one for every scan')
+  // The code itself is looked up again every ten seconds, in case its row has been added by hand.
+  assert.ok(reads.length <= 6, `a lookup every ten seconds at most, saw ${reads.length - 1}`)
   assert.equal(air.count('POST', CODES), 0)
 })
 
@@ -934,7 +921,9 @@ test('the question to Airtable outlives a visitor who hangs up, and a stuck one 
     await advance(300)
     others.push(visit(route, 'slide', { ip: ip(n) }))
   }
-  await advance(1000)
+  await advance(2500)
+  assert.equal(air.count('GET', CODES), 1, 'not asked again yet: a base that is slow to wake looks the same')
+  await advance(1100)
   for (const person of others) {
     assert.equal(person.done, true, 'released once the stuck question was asked again')
     assert.equal(await where(person), 'https://mnparkinsons.org/?src=slide#/register')
@@ -957,6 +946,12 @@ test('a stalled edge cache does not stop Airtable being asked', async (t) => {
   assert.equal(await where(person), 'https://mnparkinsons.org/?src=poster#/submit')
   await advance(4000)
   assert.equal(air.scansFor('poster').length, 1)
+
+  // Nor a picture being drawn (the SVG, which is drawn without any other waiting).
+  const picture = visit(route, 'poster.svg')
+  await advance(400)
+  assert.equal(picture.done, true, 'the picture did not wait on the cache')
+  assert.equal((await picture.response).status, 200)
 
   // Nor does it stop a new code being registered and counted.
   visit(route, 'brand-new', { ip: ip(2) })
@@ -1042,10 +1037,144 @@ test('a note that got no clear answer is not repeated for ten minutes, and the n
   await advance(60000, 1000)
   for (let n = 0; n < 2; n++) visit(route, 'gala-table', { ip: ip(30 + n) }) // two more that cannot be counted
   await advance(30000)
-  assert.deepEqual(
-    air.markers().map((row) => row.fields.Scan),
-    ['NOT RECORDED · about 5 scans (3 of them may repeat an earlier note)']
-  )
+  assert.equal(air.markers()[0].fields.Scan, 'NOT RECORDED · about 3 scans (3 of them may repeat an earlier note)')
+  assert.equal(noted(air), 5, 'and the two later ones are owned up to as well')
+})
+
+// ── Found by the review of the third pass ──────────────────────────────────
+
+test('a base that is slow to wake costs one lookup per code, and leaves turns for the next code', async (t) => {
+  const { air, advance } = setup(t)
+  const route = await load(Q)
+  for (const code of ['a', 'b', 'c', 'd']) air.addCode(code, { destination: `#/${code}` })
+  // Airtable's first answers after sitting idle: three and a half seconds each.
+  air.respond = (call) => (call.table === CODES ? { latency: 3500 } : null)
+  const people = []
+  for (const code of ['a', 'b', 'c']) for (let n = 0; n < 3; n++) people.push([code, visit(route, code, { ip: ip(people.length) })])
+  await advance(2000)
+  people.push(['d', visit(route, 'd', { ip: ip(99) })]) // a fourth code, two seconds in
+  await advance(8000)
+  for (const [code, person] of people) {
+    assert.equal(await where(person), `https://mnparkinsons.org/?src=${code}#/${code}`, `a scan of ${code}`)
+  }
+  assert.equal(air.count('GET', CODES), 4, 'nobody asked twice while the base was waking')
+  await advance(8000)
+  assert.equal(stored(air).length, 10)
+})
+
+test('several new codes first scanned together cost one lookup each', async (t) => {
+  const { air, advance } = setup(t)
+  const route = await load(Q)
+  // Five table tents, three people each, in the same instant. The lookups
+  // take turns at the gate half a second apart; waiting for a turn is not
+  // being stuck.
+  for (let code = 0; code < 5; code++) for (let n = 0; n < 3; n++) visit(route, `table-${code}`, { ip: ip(code * 10 + n) })
+  await advance(30000)
+  const asked = air.sent('GET', CODES).filter((call) => !/CREATED_TIME/.test(call.url.search))
+  assert.equal(asked.length, 10, `one lookup and one check for a twin per code, saw ${asked.length}`)
+  assert.equal(air.codes.length, 5)
+  assert.equal(stored(air).length, 15)
+})
+
+test('a row that fails inside another request’s write is retried by the request that brought it', async (t) => {
+  const { air, advance } = setup(t)
+  const route = await load(Q)
+  air.addCode('poster')
+  // A steady stream keeps the first request writing for the whole of its
+  // life; each write takes two seconds. The stream stops, and the last write
+  // that old request can start comes back 502.
+  const from = Date.now() + 17400
+  let failures = 1
+  air.respond = (call) => {
+    if (call.table !== SCANS) return null
+    return Date.now() >= from && failures-- > 0 ? { status: 502, latency: 2000 } : { latency: 2000 }
+  }
+  for (let n = 0; n < 20; n++) {
+    visit(route, 'poster', { ip: ip(n) })
+    await advance(900, 100)
+  }
+  await advance(30000) // nobody comes by afterwards
+  assert.ok(air.sent('POST', SCANS).some((call) => call.status === 502), 'the failure happened')
+  assert.equal(air.scansFor('poster').length, 20, 'every row was written inside the lives of the requests that brought them')
+})
+
+test('an instance does not wait on its own “registering” mark after its own attempt failed', async (t) => {
+  const { air, advance } = setup(t)
+  const route = await load(Q)
+  let failures = 1
+  // The first scan's look at the table before creating the row fails.
+  air.respond = (call) => (/CREATED_TIME/.test(call.url.search) && failures-- > 0 ? { status: 500 } : null)
+  visit(route, 'slide', { ip: ip(1) })
+  await advance(1000)
+  assert.equal(air.rowsFor('slide').length, 0)
+  visit(route, 'slide', { ip: ip(2) })
+  await advance(2500)
+  assert.equal(air.rowsFor('slide').length, 1, 'the second scan registers it straight away')
+  await advance(8000)
+  assert.equal(air.scansFor('slide').length, 1)
+})
+
+test('with the day’s limit reached, a row added by hand is picked up within seconds', async (t) => {
+  const { air, advance } = setup(t)
+  const route = await load(Q)
+  for (let n = 0; n < 20; n++) air.addCode(`typed-in-${n}`)
+  const first = visit(route, 'gala-table', { ip: ip(1) })
+  await advance(5000)
+  assert.equal(await where(first), 'https://mnparkinsons.org/?src=gala-table')
+  air.addCode('gala-table', { destination: '#/submit' }) // the owner adds the row by hand
+  await advance(10000)
+  const second = visit(route, 'gala-table', { ip: ip(2) })
+  await advance(6000)
+  assert.equal(await where(second), 'https://mnparkinsons.org/?src=gala-table#/submit')
+  assert.equal(air.scansFor('gala-table').length, 1)
+  assert.equal(air.rowsFor('gala-table').length, 1)
+})
+
+test('after a 429 that found the lookup ration spent, the first scan after the silence is still looked up', async (t) => {
+  const { air, advance } = setup(t)
+  const route = await load(Q)
+  let calls = 0
+  air.respond = () => (++calls === 3 ? { status: 429 } : null) // the third call is refused
+  for (let n = 0; n < 8; n++) visit(route, `first-${n}`, { ip: ip(n) }) // eight codes at once: the whole lookup ration
+  await advance(34000)
+  const before = air.calls.length
+  visit(route, 'afterwards', { ip: ip(50) })
+  await advance(1000)
+  assert.equal(air.calls.length - before >= 1, true, 'looked up at once, not three seconds later')
+})
+
+test('a code with many rows is settled on the same row by every instance', async (t) => {
+  const { air, cache, advance } = setup(t)
+  cache.hide = () => true // two data centres: each instance asks Airtable itself
+  const one = await load(Q)
+  const two = await load(Q)
+  // Eight rows for one code, made in the same second. Airtable lists them in
+  // no fixed order, so the route must see all of them to pick the same one.
+  const rows = Array.from({ length: 8 }, () => air.addCode('poster'))
+  rows.forEach((row, n) => (row.id = `recC5${n}`))
+  rows[0].id = 'recC00'
+  rows[7].id = 'recC01'
+  visit(one, 'poster', { ip: ip(1) })
+  await advance(4000)
+  visit(two, 'poster', { ip: ip(2) })
+  await advance(4000)
+  assert.deepEqual(air.scans.map((scan) => scan.fields['QR Code'][0]), ['recC00', 'recC00'])
+})
+
+test('when Airtable cannot say, a slow edge cache is still waited for', async (t) => {
+  const { air, cache, advance } = setup(t)
+  const one = await load(Q)
+  const two = await load(Q)
+  air.addCode('poster', { destination: '#/submit' })
+  visit(one, 'poster', { ip: ip(1) })
+  await advance(4000) // the data centre's cache now knows the code
+  air.respond = (call) => (call.table === CODES ? { status: 500 } : null)
+  cache.delay = 600
+  const person = visit(two, 'poster', { ip: ip(2) }) // a fresh instance: only the cache can tell it
+  await advance(1200)
+  assert.equal(await where(person), 'https://mnparkinsons.org/?src=poster#/submit')
+  await advance(5000)
+  assert.equal(air.scansFor('poster').length, 2)
 })
 
 // ── QR pictures (review: "picture encodes the request host") ───────────────

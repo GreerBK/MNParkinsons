@@ -293,11 +293,13 @@ function pretendCache() {
     stored,
     // hide(key) → true makes a read miss, as if the entry had been written in
     // another data centre or had not spread yet. stall = true makes reads
-    // never answer.
+    // never answer; delay = milliseconds makes them slow.
     hide: null,
     stall: false,
+    delay: 0,
     async match(key) {
       if (cache.stall) return new Promise(() => {})
+      if (cache.delay) await new Promise((resolve) => setTimeout(resolve, cache.delay))
       if (cache.hide && cache.hide(keyOf(key))) return undefined
       const entry = stored.get(keyOf(key))
       if (!entry) return undefined
