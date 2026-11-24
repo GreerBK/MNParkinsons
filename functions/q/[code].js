@@ -700,7 +700,8 @@ async function lookupCode(context, code, person, deadline) {
   const known = memo.get(code)
   // An answer another request learned while we were asking is as good as our
   // own, also when our own asking came back empty-handed (and also when that
-  // answer is "no such code": the scan must still get its row made).
+  // answer is "no such code": the scan must still get its row made). follow()
+  // takes a last look for the same reason; this is the backstop behind it.
   if (found !== WAITING && known && known.at >= started) return { entry: known.entry }
   const remembered = known && known.entry ? known.entry : undefined
   return found === WAITING ? { entry: remembered, late: answer } : { entry: remembered }
@@ -734,14 +735,23 @@ async function findOut(context, code, person, deadline) {
 // calls. If the question looks stuck (out for HANDOVER_MS), one of them asks
 // again, and the rest wait on that one: so a code costs at most one lookup
 // every HANDOVER_MS however long Airtable stays silent, and a base that is
-// slow to wake is asked once, or twice if it takes longer than that.
+// slow to wake is asked once, or twice if it takes longer than that. (Several
+// codes scanned all through a long silence can still spend the ration faster
+// than it refills; they then come back one every few seconds once Airtable
+// is well.)
 function askAirtable(context, code, person, deadline) {
   const now = Date.now()
   let flight = lookups.get(code)
   // Long dead: the request that asked was cut off. Start over.
   if (flight && now - flight.at >= LOOKUP_STALE_MS) flight = undefined
   if (flight && now - flight.sent < HANDOVER_MS) return followThenLook(context, code, person, deadline, flight)
-  // None out, or the one that is out looks stuck: ask if we may.
+  // None out, or the one that is out looks stuck: ask if we may. A request
+  // with little time left may not: its call would be cut short with it, and
+  // the question dropped for everybody who is waiting on it. It leaves the
+  // asking to a younger request.
+  if (deadline - Math.max(now, nextCallAt) < HANDOVER_MS + 1000) {
+    return flight ? followThenLook(context, code, person, deadline, flight) : Promise.resolve(undefined)
+  }
   if (now < backoffUntil || !take(person ? personLookups : otherLookups, now)) {
     return flight ? followThenLook(context, code, person, deadline, flight) : Promise.resolve(undefined)
   }
@@ -755,9 +765,15 @@ function askAirtable(context, code, person, deadline) {
     if (entry !== undefined) rememberCode(context, code, entry, found ? found.created : 0)
     if (lookups.get(code) === mine) lookups.delete(code)
     if (entry !== undefined) return entry
-    // Our own call failed; another request's may have got through meanwhile.
+    // Our own call failed. Another request's may have got through meanwhile;
+    // or a newer question for this code may still be out, and then this scan
+    // waits on that one like everybody else.
     const known = memo.get(code)
-    return known && known.at >= now ? known.entry : undefined
+    if (known && known.at >= now) return known.entry
+    const newer = lookups.get(code)
+    return newer && newer !== mine && Date.now() < deadline
+      ? followThenLook(context, code, person, deadline, newer)
+      : undefined
   })
 }
 
@@ -786,6 +802,10 @@ async function follow(flights, code, since, until, needRow) {
     if (!flights.has(code)) break // whoever was working on it finished without an answer
     await sleep(POLL_MS)
   }
+  // One last look: an answer that landed during the final sleep must not be
+  // missed, or a scan gives up on a question that was in fact answered.
+  const last = memo.get(code)
+  if (last && last.at >= since && (last.entry || !needRow)) return last.entry
   return needRow ? null : undefined
 }
 
