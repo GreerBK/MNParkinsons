@@ -1252,7 +1252,7 @@ test('a scan of a remembered code is written by its own request even when the fr
 
 // ── Found by the check of the fifth pass ───────────────────────────────────
 
-test('in a long Airtable silence, every scan whose request is still alive when the answer comes is stored', async (t) => {
+test('in a long Airtable silence, with someone scanning every half second, every scan whose request is still alive when the answer comes is stored', async (t) => {
   const { air, advance } = setup(t)
   const route = await load(Q)
   air.addCode('poster', { destination: '#/submit' })
@@ -1285,7 +1285,7 @@ test('in a long Airtable silence, every scan whose request is still alive when t
   assert.equal(counted.length + noted(air), people.length)
 })
 
-test('a remembered code whose row was replaced: scans sent on with the old page are counted against the new row', async (t) => {
+test('a remembered code whose row was replaced: the scans waiting on a lookup are counted against the new row', async (t) => {
   const { air, advance } = setup(t)
   const route = await load(Q)
   const old = air.addCode('poster', { destination: '#/old' })
@@ -1308,14 +1308,18 @@ test('a remembered code whose row was replaced: scans sent on with the old page 
     assert.equal(await where(person), 'https://mnparkinsons.org/?src=poster#/old', 'sent on after a second with what was remembered')
   }
   // The answer arrives long after they have gone, while their requests can
-  // still write. A scan whose own lookup was lost waits on the newer one.
+  // still write. The three scans that were waiting on somebody else's lookup
+  // get it. The two whose own lookup was lost had settled for the row they
+  // remembered: those rows are refused, and the scans are owned up to.
   await advance(33000)
-  const onNewRow = air.scans.filter((row) => (row.fields['QR Code'] || [])[0] === fresh.id)
-  assert.equal(onNewRow.length, 5, 'all five counted against the row that exists now')
-  assert.equal(air.markers().length, 0)
+  const onNewRow = () => air.scans.filter((row) => (row.fields['QR Code'] || [])[0] === fresh.id).length
+  assert.equal(onNewRow(), 3, 'the three that were waiting are counted against the row that exists now')
   const later = visit(route, 'poster', { ip: ip(9) })
   await advance(1000)
   assert.equal(await where(later), 'https://mnparkinsons.org/?src=poster#/new')
+  await advance(30000)
+  assert.equal(onNewRow(), 4, 'and so is the later scan')
+  assert.equal(noted(air), 2, 'the other two are in a NOT RECORDED row')
 })
 
 test('a writer with no time left for another write lets go at once', async (t) => {
@@ -1343,6 +1347,239 @@ test('a writer with no time left for another write lets go at once', async (t) =
   Promise.all(visitor.background).then(() => (finished = true))
   await settle()
   assert.ok(finished, 'the request is not kept alive for a pace wait it could not use')
+})
+
+// ── Found by the check of the sixth pass ───────────────────────────────────
+
+// Three codes, each scanned twice in the first second of a 14-second silence
+// and then by nobody. Returns just after Airtable is well again.
+async function pairsInASilence(t) {
+  const { air, advance } = setup(t)
+  const route = await load(Q)
+  for (const code of ['a', 'b', 'c', 'd']) air.addCode(code, { destination: `#/${code}` })
+  const wellFrom = Date.now() + 14000
+  air.respond = (call) => (call.table === CODES && call.method === 'GET' && Date.now() < wellFrom ? { hang: true } : null)
+  for (const round of [0, 1]) {
+    for (const [n, code] of ['a', 'b', 'c'].entries()) {
+      visit(route, code, { ip: ip(10 * round + n) })
+      await advance(100)
+    }
+    await advance(700)
+  }
+  await advance(12100)
+  const during = () => air.sent('GET', CODES).filter((call) => call.at < wellFrom).length
+  return { air, advance, route, during }
+}
+
+test('no scan asks Airtable twice: codes scanned twice as a silence begins leave lookups for the code scanned next', async (t) => {
+  // The two scans of a code must not keep its lookup going between them until
+  // the ration is spent. Just after Airtable is well, somebody scans a fourth
+  // code for the first time.
+  const { air, advance, route, during } = await pairsInASilence(t)
+  const person = visit(route, 'd', { ip: ip(99) })
+  await advance(6000)
+  assert.equal(during(), 6, 'each of the six scans asked once during the silence')
+  assert.equal(await where(person), 'https://mnparkinsons.org/?src=d#/d')
+  await advance(30000)
+  assert.equal(air.scansFor('d').length, 1, 'and the scan is stored')
+})
+
+test('codes scanned twice as a silence begins: once Airtable is well, the next scan of each lands on its page', async (t) => {
+  // The same start, but the people who come next scan the same three codes,
+  // and then a fourth. None of the codes may be left with a spent ration, or
+  // behind a question that was sent a moment ago and will never be answered.
+  const { air, advance, route, during } = await pairsInASilence(t)
+  const people = []
+  for (const code of ['a', 'b', 'c', 'd']) {
+    people.push([code, visit(route, code, { ip: ip(90 + people.length) })])
+    await advance(200)
+  }
+  await advance(6000)
+  const landed = []
+  for (const [code, person] of people) {
+    landed.push(`${code}:${(await where(person)) === `https://mnparkinsons.org/?src=${code}#/${code}` ? 'page' : 'HOME'}`)
+  }
+  assert.equal(landed.join(' '), 'a:page b:page c:page d:page', `${during()} lookups were sent during the silence`)
+  await advance(30000)
+  for (const [code] of people) assert.ok(air.scansFor(code).length >= 1, `the late scan of ${code} is stored`)
+})
+
+test('in a total Airtable silence, a quick burst on a remembered code costs one scan, not the burst', async (t) => {
+  const { air, advance } = setup(t)
+  const route = await load(Q)
+  air.addCode('poster', { destination: '#/submit' })
+  air.addCode('flyer')
+  visit(route, 'poster', { ip: ip(0) })
+  await advance(4000)
+  await advance(6 * 60000, 1000) // remembered, but no longer fresh
+  // Airtable goes silent for thirty seconds: every call hangs, lookups and
+  // writes alike. Eight people scan the code within two seconds. The first
+  // one's own lookup times out after eight seconds; that scan settles for the
+  // row it remembers, and its row goes out alone, into the silence. That one
+  // lost write is what holds the other seven rows back until Airtable answers
+  // again. (When the first scan waited as long as the rest, all the rows left
+  // together in one write, and the silence took them all.)
+  const wellFrom = Date.now() + 30000
+  air.respond = () => (Date.now() < wellFrom ? { hang: true } : null)
+  const people = []
+  for (let n = 1; n <= 8; n++) {
+    people.push(visit(route, 'poster', { ip: ip(n) }))
+    await advance(250, 50)
+  }
+  await advance(1000)
+  for (const person of people) assert.equal(await where(person), 'https://mnparkinsons.org/?src=poster#/submit')
+  await advance(60000) // their requests end; Airtable has been well for half a minute
+  visit(route, 'flyer', { ip: ip(20) }) // the next visitor writes what is waiting
+  await advance(40000)
+  const kept = air.scansFor('poster').length - 1
+  assert.equal(kept + noted(air), 8, 'every scan is stored or owned up to')
+  assert.equal(kept, 7, 'one scan finds out that Airtable is silent; the other seven are stored later')
+})
+
+test('a request whose lookup ends with its time is over then, not a pooling delay later', async (t) => {
+  const { air, advance, settle } = setup(t)
+  const route = await load(Q)
+  air.addCode('poster', { destination: '#/submit' })
+  // No lookup is ever answered. Six people scan at once and ask in turn, four
+  // seconds apart. The last one's call is cut short by the end of its own
+  // request, so its scan is given up at that moment, with no time to write.
+  air.respond = (call) => (call.table === CODES ? { hang: true } : null)
+  const people = []
+  for (let n = 1; n <= 6; n++) people.push(visit(route, 'poster', { ip: ip(n) }))
+  await advance(27100)
+  assert.equal(air.sent('GET', CODES).length, 6, 'each of the six asked once')
+  let over = false
+  Promise.all(people.flatMap((person) => person.background)).then(() => (over = true))
+  await settle()
+  assert.ok(over, 'every request is over when its 27 seconds are')
+})
+
+// A lookup that stays stuck: every four seconds a newcomer asks again, and its
+// request is then cut off (its call never settles, so it never comes back to
+// look). One old request has waited on those lookups since `oldAt` and looks
+// every half second. settle() after a visit makes its lookup start in that
+// very millisecond, so the time the old request has left at each look is
+// exact. Returns 20 seconds in, after the last newcomer.
+async function stuckLookup(t, { oldAt, afterwards }) {
+  const { air, advance, settle } = setup(t)
+  const route = await load(Q)
+  air.addCode('poster', { destination: '#/submit' })
+  const began = Date.now()
+  const forPoster = (call) =>
+    call.table === CODES && call.method === 'GET' && (call.url.searchParams.get('filterByFormula') || '').includes("='poster'")
+  air.respond = (call) =>
+    !forPoster(call) ? null : Date.now() - began <= 20000 ? { hang: true, deaf: true } : afterwards(Date.now() - began)
+  let old
+  for (let n = 0; n <= 5; n++) {
+    visit(route, 'poster', { ip: ip(100 + n) })
+    await settle()
+    if (n === 0) {
+      await advance(oldAt)
+      old = visit(route, 'poster', { ip: ip(1), cf: { city: 'old', region: 'Minnesota', country: 'US' } })
+      await settle()
+      await advance(4000 - oldAt)
+    } else if (n < 5) {
+      await advance(4000)
+    }
+  }
+  const asked = () => air.calls.filter(forPoster).map((call) => call.at - began)
+  return { air, advance, settle, route, old, asked }
+}
+const young = { city: 'young', region: 'Minnesota', country: 'US' }
+
+test('a request with four seconds left leaves a stuck lookup to a younger one that looks a moment later', async (t) => {
+  // The old request has exactly four seconds left when the lookup sent at
+  // 20 s first looks stuck to it, at 24.2 s. A younger request looks 50 ms
+  // later. Airtable answers lookups sent from 24.225 s on: the old request's
+  // own would have hung until its request ended, and taken the question with it.
+  const { air, advance, settle, route, asked } = await stuckLookup(t, {
+    oldAt: 1200,
+    afterwards: (at) => (at < 24225 ? { hang: true } : null),
+  })
+  await advance(250)
+  const later = visit(route, 'poster', { ip: ip(2), cf: young })
+  await settle()
+  await advance(12000)
+  visit(route, 'poster', { ip: ip(3) }) // somebody comes by and writes what is waiting
+  await advance(45000, 250)
+  assert.equal(await where(later), 'https://mnparkinsons.org/?src=poster#/submit', `lookups were sent at ${asked()}`)
+  const cities = stored(air).map((row) => row.fields.City)
+  assert.ok(cities.includes('young'), 'the younger scan is stored')
+  assert.ok(cities.includes('old'), 'and so is the old one: its request was still alive when the answer came')
+  assert.deepEqual(asked().slice(0, 7), [0, 4000, 8000, 12000, 16000, 20000, 24250], 'the younger request asked')
+})
+
+test('a request with exactly five seconds left still asks again', async (t) => {
+  // Five seconds left at 24.2 s, when the lookup sent at 20 s first looks stuck.
+  const five = await stuckLookup(t, { oldAt: 2200, afterwards: (at) => (at < 24100 ? { hang: true } : null) })
+  await five.advance(5000)
+  assert.deepEqual(five.asked(), [0, 4000, 8000, 12000, 16000, 20000, 24200], 'asked at 24.2 s')
+  await five.advance(5000)
+  visit(five.route, 'poster', { ip: ip(3) }) // somebody comes by and writes what is waiting
+  await five.advance(45000, 250)
+  assert.ok(stored(five.air).some((row) => row.fields.City === 'old'), 'and its scan is stored')
+})
+
+test('a request with four and a half seconds left does not ask again', async (t) => {
+  // Five seconds left at 23.7 s (the lookup is 3.7 s old: not stuck yet), four and a half at 24.2 s.
+  const { advance, asked } = await stuckLookup(t, { oldAt: 1700, afterwards: () => ({ hang: true }) })
+  await advance(8500) // its request ends at 28.7 s
+  assert.deepEqual(asked(), [0, 4000, 8000, 12000, 16000, 20000], 'nobody asked after the newcomers')
+})
+
+test('the time a request has left is counted from its turn at the gate', async (t) => {
+  // The old request has exactly five seconds left at 24.2 s, but two other
+  // codes were looked up at 24.15 s, so the next turn at the gate is 25.15 s:
+  // 4.05 seconds before its request ends. The lookup sent at that turn takes
+  // five seconds to answer, as a waking base does. Sent by the old request it
+  // would be cut short a second before the answer, and the question dropped.
+  const { air, advance, settle, route, asked } = await stuckLookup(t, { oldAt: 2200, afterwards: () => ({ latency: 5000 }) })
+  air.addCode('other-1')
+  air.addCode('other-2')
+  await advance(250)
+  visit(route, 'poster', { ip: ip(2), cf: young }) // looks 50 ms after the old request
+  await settle()
+  await advance(3900)
+  visit(route, 'other-1', { ip: ip(4) })
+  visit(route, 'other-2', { ip: ip(5) })
+  await settle()
+  await advance(10850)
+  visit(route, 'poster', { ip: ip(3) })
+  await advance(45000, 250)
+  assert.deepEqual(asked().slice(0, 7), [0, 4000, 8000, 12000, 16000, 20000, 25150], 'one lookup, sent at the turn')
+  assert.ok(stored(air).some((row) => row.fields.City === 'young'), `the younger scan is stored; noted ${noted(air)}`)
+})
+
+test('a scan waiting for a new code’s row takes a last look when its wait ends', async (t) => {
+  const { air, advance, settle } = setup(t)
+  const route = await load(Q)
+  // Two people scan a brand-new code in the same instant, and Airtable is slow
+  // all the way: "no such code" after 3.2 s, the table listed in 7.95 s, the
+  // first create refused after 7.95 s (as when the Name column has been
+  // renamed), the second answered after 7.85 s. So the row is made 26.95 s
+  // in, 50 ms before both requests' time is up and between two of the waiting
+  // scan's looks.
+  let gets = 0
+  let posts = 0
+  air.respond = (call) => {
+    if (call.table !== CODES) return null
+    if (call.method === 'GET') return [{ latency: 3200 }, { latency: 7950 }][gets++] || null
+    return [{ status: 422, latency: 7950 }, { latency: 7850 }][posts++] || null
+  }
+  const began = Date.now()
+  const from = (city) => ({ city, region: 'Minnesota', country: 'US' })
+  visit(route, 'gala', { ip: ip(1), cf: from('creator') })
+  await settle()
+  visit(route, 'gala', { ip: ip(2), cf: from('waiting') })
+  await settle()
+  await advance(40000, 50)
+  const made = air.rowsFor('gala')
+  assert.equal(made.length, 1, 'the row was made')
+  assert.equal(made[0].created - began, 26950, 'at 26.95 s')
+  visit(route, 'gala', { ip: ip(3), cf: from('later') }) // somebody comes by and writes what is waiting
+  await advance(30000, 50)
+  const cities = stored(air).map((row) => row.fields.City).sort()
+  assert.deepEqual(cities, ['creator', 'later', 'waiting'], `the waiting scan is counted too; noted ${noted(air)}`)
 })
 
 // ── QR pictures (review: "picture encodes the request host") ───────────────

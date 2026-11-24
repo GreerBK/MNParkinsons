@@ -100,8 +100,10 @@ const CODE_RE = /^([a-z0-9][a-z0-9-]{0,39})(?:\.(png|svg))?$/
 const REMEMBERED_WAIT_MS = 1000
 const LOOKUP_WAIT_MS = 5000
 const AIRTABLE_TIMEOUT_MS = 8000 // hard limit on any single Airtable call
-// Cloudflare gives background work 30 seconds after the response. Everything
-// a request starts is planned to finish inside this, measured from its start.
+// Cloudflare gives background work 30 seconds after the response. Every
+// Airtable call a request makes is planned to finish inside this, measured
+// from its start. (A last wait for the edge cache, or the random pause before
+// registering a code, can end a second or two after it; nothing is sent then.)
 const WINDOW_MS = 27000
 // After a 429 this route makes no Airtable call for 31 to 41 seconds
 // (Airtable's lockout is 30). The spread keeps several server instances that
@@ -137,10 +139,11 @@ const YOUNG_SPREAD_MS = 3000
 // Airtable is asked anyway after this long.
 const EDGE_WAIT_MS = 300
 // A lookup that left for Airtable this long ago is probably stuck (a hung
-// call), and a scan that is waiting on it asks again; and again each time
-// the latest question has been out this long. Long enough that a base waking
-// up (see above) is not mistaken for a stuck call: asking a waking base again
-// hurries nothing, and every lookup is paid for out of the ration below.
+// call), and one of the scans waiting on it asks again; then another, each
+// time the latest question has been out this long. Long enough that a base
+// waking up (see above) is not mistaken for a stuck call: asking a waking
+// base again hurries nothing, and every lookup is paid for out of the ration
+// below.
 const HANDOVER_MS = 4000
 const LOOK_AGAIN_MS = 500 // how often a scan waiting on someone else's lookup checks whether to ask itself
 // When Airtable could not say and the edge cache has still not answered, the
@@ -735,10 +738,11 @@ async function findOut(context, code, person, deadline) {
 // calls. If the question looks stuck (out for HANDOVER_MS), one of them asks
 // again, and the rest wait on that one: so a code costs at most one lookup
 // every HANDOVER_MS however long Airtable stays silent, and a base that is
-// slow to wake is asked once, or twice if it takes longer than that. (Several
-// codes scanned all through a long silence can still spend the ration faster
-// than it refills; they then come back one every few seconds once Airtable
-// is well.)
+// slow to wake is asked once, or twice if it takes longer than that. No
+// request asks twice, so a code that nobody new is scanning stops costing
+// lookups. (Several codes scanned all through a long silence can still spend
+// the ration faster than it refills; they then come back one every few
+// seconds once Airtable is well.)
 function askAirtable(context, code, person, deadline) {
   const now = Date.now()
   let flight = lookups.get(code)
@@ -765,15 +769,14 @@ function askAirtable(context, code, person, deadline) {
     if (entry !== undefined) rememberCode(context, code, entry, found ? found.created : 0)
     if (lookups.get(code) === mine) lookups.delete(code)
     if (entry !== undefined) return entry
-    // Our own call failed. Another request's may have got through meanwhile;
-    // or a newer question for this code may still be out, and then this scan
-    // waits on that one like everybody else.
+    // Our own call failed; another request's may have got through meanwhile.
+    // If not, this scan gives up here. It does not wait on a newer question
+    // that may be out for the code, and it never asks a second time. Both
+    // were tried: in an outage the asking spent the lookups other codes
+    // needed, and the waiting made a remembered code's rows all leave late,
+    // together, in one write that was then lost whole.
     const known = memo.get(code)
-    if (known && known.at >= now) return known.entry
-    const newer = lookups.get(code)
-    return newer && newer !== mine && Date.now() < deadline
-      ? followThenLook(context, code, person, deadline, newer)
-      : undefined
+    return known && known.at >= now ? known.entry : undefined
   })
 }
 
@@ -1124,6 +1127,8 @@ onApiRequest((context) => kickFlush(context, Date.now() + WINDOW_MS))
 async function flushSoon(context, deadline) {
   const { env } = context
   const budget = budgetFor(context)
+  // A request that could no longer start a write has nothing to wait for.
+  if (Date.now() >= lastStart(deadline)) return
   await sleep(FLUSH_DELAY_MS + Math.floor(Math.random() * FLUSH_SPREAD_MS))
   for (;;) {
     const now = Date.now()
