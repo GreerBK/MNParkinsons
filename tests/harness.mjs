@@ -135,6 +135,8 @@ function pretendAirtable(latency) {
     limiter: false, // enforce 5 requests a second, then 30 seconds of 429
     lockedUntil: 0,
     recent: [],
+    lists: 0, // how many times QR Codes has been listed
+    codeIds: [], // ids to give the next QR Codes rows created, for tests that need to know which of two sorts first
   }
   // Like real record ids, these are unique but in no particular order.
   const newId = (letter) => {
@@ -147,7 +149,9 @@ function pretendAirtable(latency) {
   const reply = (status, body) => ({ status, body })
   const normal = (value) => String(value || '').trim().toLowerCase()
 
-  air.addCode = (code, { destination = '', name = code, created = Date.now() } = {}) => {
+  // Rows the tests set up by hand are a minute old unless they say otherwise:
+  // the route treats a row only seconds old as one that may still gain a twin.
+  air.addCode = (code, { destination = '', name = code, created = Date.now() - 60000 } = {}) => {
     const row = { id: newId('C'), created, fields: { Name: name, Code: code } }
     if (destination) row.fields.Destination = destination
     air.codes.push(row)
@@ -172,8 +176,13 @@ function pretendAirtable(latency) {
       const max = Number(url.searchParams.get('maxRecords') || 100)
       const names = url.searchParams.getAll('fields[]')
       if (names.some((name) => !air.codeFields.has(name))) return reply(422, { error: { type: 'UNKNOWN_FIELD_NAME' } })
-      const records = air.codes
-        .filter((row) => normal(row.fields.Code) === wanted || (lastDay && now - row.created < 86400000))
+      // The real API promises no order: hand the rows back the other way
+      // round on every second call, so nothing can lean on "oldest first".
+      const matched = air.codes.filter(
+        (row) => normal(row.fields.Code) === wanted || (lastDay && now - row.created < 86400000)
+      )
+      if (air.lists++ % 2) matched.reverse()
+      const records = matched
         .slice(0, max)
         .map((row) => ({
           id: row.id,
@@ -187,7 +196,7 @@ function pretendAirtable(latency) {
       if (Object.keys(fields).some((name) => !air.codeFields.has(name))) {
         return reply(422, { error: { type: 'UNKNOWN_FIELD_NAME' } })
       }
-      const row = { id: newId('C'), created: now, fields: { ...fields } }
+      const row = { id: air.codeIds.shift() || newId('C'), created: now, fields: { ...fields } }
       air.codes.push(row)
       return reply(200, { id: row.id, createdTime: createdTime(now), fields: row.fields })
     }
@@ -195,6 +204,10 @@ function pretendAirtable(latency) {
       const ids = url.searchParams.getAll('records[]')
       air.codes = air.codes.filter((row) => !ids.includes(row.id))
       return reply(200, { records: ids.map((id) => ({ id, deleted: true })) })
+    }
+    // Like the real API: at most ten records in one create call.
+    if (method === 'POST' && body.records && body.records.length > 10) {
+      return reply(422, { error: { type: 'INVALID_REQUEST_UNKNOWN' } })
     }
     if (table === SCANS && method === 'POST') {
       const known = new Set(air.codes.map((row) => row.id))
@@ -276,9 +289,16 @@ function pretendAirtable(latency) {
 function pretendCache() {
   const stored = new Map()
   const keyOf = (key) => (typeof key === 'string' ? key : key.url)
-  return {
+  const cache = {
     stored,
+    // hide(key) → true makes a read miss, as if the entry had been written in
+    // another data centre or had not spread yet. stall = true makes reads
+    // never answer.
+    hide: null,
+    stall: false,
     async match(key) {
+      if (cache.stall) return new Promise(() => {})
+      if (cache.hide && cache.hide(keyOf(key))) return undefined
       const entry = stored.get(keyOf(key))
       if (!entry) return undefined
       if (Date.now() >= entry.expires) {
@@ -300,6 +320,7 @@ function pretendCache() {
       return stored.delete(keyOf(key))
     },
   }
+  return cache
 }
 
 // The smallest gap, in milliseconds, between consecutive calls in a list.

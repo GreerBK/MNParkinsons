@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import zlib from 'node:zlib'
 import qrcode from 'qrcode-generator'
 import { ANDROID, CODES, ENV, IPHONE, SCANS, load, setup, smallestGap, visit } from './harness.mjs'
 
@@ -124,22 +125,63 @@ test('a fresh server instance uses what the data centre already knows', async (t
 
 // ── A slow or silent Airtable (review: "redirect waits with no time limit") ─
 
-test('a slow Airtable holds the visitor for at most 2.5 seconds, and the scan is still counted', async (t) => {
+test('a slow Airtable holds the visitor for at most five seconds, and the scan is still counted', async (t) => {
   const { air, advance } = setup(t, { latency: 6000 })
   const route = await load(Q)
   air.addCode('poster', { destination: '#/submit' })
 
+  // Nothing is remembered about the code, so only Airtable knows where it leads.
   const visitor = visit(route, 'poster')
-  await advance(2400)
-  assert.equal(visitor.done, false, 'still waiting for Airtable at 2.4 s')
-  await advance(200)
-  assert.equal(visitor.done, true, 'sent on by 2.6 s')
+  await advance(4900)
+  assert.equal(visitor.done, false, 'still waiting for Airtable at 4.9 s')
+  await advance(300)
+  assert.equal(visitor.done, true, 'sent on by 5.2 s')
   // The Destination was not known in time, so: the home page.
   assert.equal(await where(visitor), 'https://mnparkinsons.org/?src=poster')
 
   air.latency = 100
   await advance(8000)
   assert.equal(air.scansFor('poster').length, 1, 'counted once Airtable answered')
+})
+
+test('Airtable waking up slowly (four seconds) still gets a first scan to its Destination', async (t) => {
+  const { air, advance } = setup(t, { latency: 4000 }) // its first answer after the base has sat idle
+  const route = await load(Q)
+  air.addCode('poster', { destination: '#/submit' })
+  const visitor = visit(route, 'poster')
+  await advance(4300)
+  assert.equal(await where(visitor), 'https://mnparkinsons.org/?src=poster#/submit')
+  air.latency = 100
+  await advance(4000)
+  assert.equal(air.scansFor('poster').length, 1)
+})
+
+test('a code scanned before waits one second for a slow Airtable, then uses what is remembered', async (t) => {
+  const { air, advance } = setup(t)
+  const route = await load(Q)
+  const row = air.addCode('poster', { destination: '#/submit' })
+  visit(route, 'poster', { ip: ip(1) })
+  await advance(3000)
+  await advance(6 * 60000, 1000) // past the five minutes an answer is trusted
+
+  // Airtable is waking up: four seconds for this answer.
+  air.latency = 4000
+  const slow = visit(route, 'poster', { ip: ip(2) })
+  await advance(900)
+  assert.equal(slow.done, false, 'Airtable gets a second to answer')
+  await advance(300)
+  assert.equal(slow.done, true, 'then the remembered Destination is used')
+  assert.equal(await where(slow), 'https://mnparkinsons.org/?src=poster#/submit')
+  await advance(12000) // the lookup takes four seconds, and so does the write
+  assert.equal(air.scansFor('poster').length, 2, 'and the scan is counted once the answer is in')
+
+  // With Airtable quick again, a changed Destination is picked up straight away.
+  air.latency = 100
+  row.fields.Destination = '#/finder'
+  await advance(6 * 60000, 1000)
+  const quick = visit(route, 'poster', { ip: ip(3) })
+  await advance(400)
+  assert.equal(await where(quick), 'https://mnparkinsons.org/?src=poster#/finder')
 })
 
 test('when Airtable does not answer at all, a code scanned before still goes to its Destination', async (t) => {
@@ -154,14 +196,14 @@ test('when Airtable does not answer at all, a code scanned before still goes to 
   air.respond = (call) => (call.method === 'GET' ? { hang: true } : null)
 
   const second = visit(route, 'poster', { ip: ip(2) })
-  await advance(2600)
+  await advance(1200)
   assert.equal(second.done, true)
   assert.equal(await where(second), 'https://mnparkinsons.org/?src=poster#/submit', 'the remembered Destination')
   await advance(12000)
   assert.equal(air.scansFor('poster').length, 2, 'and counted against the remembered row')
 
   const stranger = visit(route, 'never-seen', { ip: ip(3) })
-  await advance(2600)
+  await advance(5200)
   assert.equal(await where(stranger), 'https://mnparkinsons.org/?src=never-seen')
   await advance(12000)
   assert.equal(air.codes.length, 1, 'nothing is created when Airtable cannot be asked')
@@ -238,9 +280,13 @@ test('a Destination that is plainly not an address falls back to the home page',
     ['https://localhost/x', 'https://mnparkinsons.org/?src=CODE'],
     ['javascript:alert(1)', 'https://mnparkinsons.org/?src=CODE'],
     ['http://insecure.example/', 'https://mnparkinsons.org/?src=CODE'],
-    // Another site has to be a full https:// address
-    ['www.parkinson.org/walk', 'https://mnparkinsons.org/?src=CODE'],
+    // Another site has to be a full https:// address, or start with www.
+    ['www.parkinson.org/walk', 'https://www.parkinson.org/walk'],
+    ['WWW.Parkinson.org/walk?a=1', 'https://www.parkinson.org/walk?a=1'],
+    ['www.parkinson.org:8443/walk', 'https://mnparkinsons.org/?src=CODE'],
     ['//www.parkinson.org/walk', 'https://mnparkinsons.org/?src=CODE'],
+    ['zoom.us/j/1234567890', 'https://mnparkinsons.org/?src=CODE'],
+    ['parkinson.org/walk', 'https://mnparkinsons.org/?src=CODE'],
     // Our own site over http: same page over https; but never on a port
     ['http://mnparkinsons.org/#/submit', 'https://mnparkinsons.org/?src=CODE#/submit'],
     ['mnparkinsons.org:80/#/submit', 'https://mnparkinsons.org/?src=CODE'],
@@ -305,6 +351,7 @@ test('only a person opening the link is counted', async (t) => {
     ['python-requests', false, { ua: 'python-requests/2.31.0', accept: '*/*' }],
     ['no user agent', false, { ua: null }],
     ['an <img> or fetch() pointing at the link', false, { ua: chrome, headers: { 'sec-fetch-mode': 'no-cors' } }],
+    ['a page that frames the link in a hidden <iframe>', false, { ua: chrome, headers: { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'iframe' } }],
     ['a page preview marked the old way', false, { headers: { 'x-purpose': 'preview' } }],
     ['Opera Mini in extreme data-saving mode (a known gap)', false, { ua: 'Opera/9.80 (Android; Opera Mini/8.0.1807/36.1609; U; en) Presto/2.12.423 Version/12.16' }],
     ['a HEAD link check', false, { method: 'HEAD' }],
@@ -355,8 +402,9 @@ test('made-up addresses cannot spend the Airtable budget or mint rows freely', a
   const lookups = calls.filter((call) => call.method === 'GET' && !/CREATED_TIME/.test(call.url.search))
   assert.ok(lookups.length <= 13, `lookups are rationed (8 at once, then one every 3 seconds), saw ${lookups.length}`)
   assert.ok(air.codes.length >= 1 && air.codes.length <= 5, `rows are rationed too, saw ${air.codes.length}`)
-  // And however much there was to do, the calls were spread out.
-  assert.ok(smallestGap(calls) >= 350, `calls at least 350 ms apart, saw ${smallestGap(calls)}`)
+  // And however much there was to do, the calls were spread out: never more
+  // than two in any second from one instance.
+  assert.ok(smallestGap(calls) >= 500, `calls at least 500 ms apart, saw ${smallestGap(calls)}`)
 })
 
 test('new codes are capped at about twenty a day across the whole table', async (t) => {
@@ -411,8 +459,29 @@ test('a room scanning a brand-new code at once makes one row and a handful of ca
   assert.ok(!air.calls.some((call) => call.status === 429), 'the base was never rate limited')
 })
 
-test('two server instances registering the same new code count against one row', async (t) => {
+test('server instances in one data centre take turns registering a new code', async (t) => {
   const { air, advance } = setup(t)
+  air.limiter = true // 5 requests a second, like the real base
+  const instances = [await load(Q), await load(Q), await load(Q), await load(Q)]
+  // A code nobody has scanned before goes up on a slide: 24 phones in three
+  // seconds, served by four instances.
+  const room = []
+  for (let n = 0; n < 24; n++) {
+    room.push(visit(instances[n % 4], 'on-the-slide', { ip: ip(n) }))
+    await advance(125, 25)
+  }
+  await advance(12000)
+  for (const visitor of room) assert.equal(await where(visitor), 'https://mnparkinsons.org/?src=on-the-slide')
+  assert.equal(air.count('POST', CODES), 1, 'one instance registered it; the others waited for its row')
+  assert.equal(air.rowsFor('on-the-slide').length, 1)
+  assert.equal(air.scansFor('on-the-slide').length, 24, 'every scan counted against it')
+  assert.ok(!air.calls.some((call) => call.status === 429), 'the base was never rate limited')
+})
+
+test('two server instances registering the same new code count against one row', async (t) => {
+  const { air, cache, advance } = setup(t)
+  // Neither sees the other's "registering" mark: the same instant, or two data centres.
+  cache.hide = (key) => key.includes('/registering/')
   const one = await load(Q)
   const two = await load(Q)
   const a = visit(one, 'table-tent', { ip: ip(1) })
@@ -434,6 +503,38 @@ test('two server instances registering the same new code count against one row',
   await advance(6000)
   assert.equal(new Set(air.scansFor('table-tent').map((scan) => scan.fields['QR Code'][0])).size, 1)
   assert.equal(air.scansFor('table-tent').length, 4)
+})
+
+test('an instance that saw only the spare twin row moves to the shared one within seconds', async (t) => {
+  const { air, cache, advance } = setup(t)
+  cache.hide = (key) => key.includes('/registering/') // as above: the race happens
+  const [one, two, three] = [await load(Q), await load(Q), await load(Q)]
+  // The row made first gets the id that sorts last, so the row made second is
+  // the one every lookup settles on (both are made in the same second).
+  air.codeIds.push('recCzzzzzzzzzzzzzz', 'recCaaaaaaaaaaaaaa')
+  await advance(300)
+  visit(one, 'table-tent', { ip: ip(1) })
+  await advance(900)
+  visit(two, 'table-tent', { ip: ip(2) }) // checks for the row just before the first instance's lands
+  // The third instance asks between the two rows appearing: it sees only the
+  // row that will end up the spare.
+  while (air.rowsFor('table-tent').length === 0) await advance(50)
+  assert.deepEqual(air.rowsFor('table-tent').map((row) => row.id), ['recCzzzzzzzzzzzzzz'], 'one row exists when the third instance looks')
+  visit(three, 'table-tent', { ip: ip(3) })
+  await advance(9000)
+  const made = air.rowsFor('table-tent')
+  assert.equal(made.length, 2, 'the race happened, and the third instance did not add a row of its own')
+  assert.equal(Math.floor(made[0].created / 1000), Math.floor(made[1].created / 1000), 'both in the same second, so the id decides')
+
+  // Scans on the third instance over the next minutes.
+  for (const [n, wait] of [0, 5000, 25000, 90000, 120000].entries()) {
+    await advance(wait, 500)
+    visit(three, 'table-tent', { ip: ip(10 + n) })
+    await advance(6000)
+  }
+  const perRow = (id) => air.scans.filter((scan) => (scan.fields['QR Code'] || [])[0] === id).length
+  assert.ok(perRow('recCzzzzzzzzzzzzzz') <= 1, `the spare took at most the one scan that raced it, saw ${perRow('recCzzzzzzzzzzzzzz')}`)
+  assert.equal(perRow('recCaaaaaaaaaaaaaa') + perRow('recCzzzzzzzzzzzzzz'), 8)
 })
 
 test('a renamed or deleted Name or Notes column does not stop new codes registering', async (t) => {
@@ -479,6 +580,23 @@ test('a steady stream is batched, not one write per scan', async (t) => {
   const writes = air.sent('POST', SCANS)
   assert.ok(writes.length <= 16, `about one write a second, saw ${writes.length}`)
   assert.ok(smallestGap(writes) >= 1000)
+})
+
+test('a trickle of scans is pooled into a call every few seconds, not a call a second', async (t) => {
+  const { air, advance } = setup(t)
+  const route = await load(Q)
+  air.addCode('poster')
+  for (let n = 0; n < 25; n++) {
+    visit(route, 'poster', { ip: ip(n) })
+    await advance(1200, 100)
+  }
+  await advance(10000)
+  assert.equal(air.scansFor('poster').length, 25)
+  // Several server instances can each be getting a trickle like this one at
+  // the same moment; a call a second from each would be the base's whole limit.
+  const writes = air.sent('POST', SCANS)
+  assert.ok(writes.length <= 10, `saw ${writes.length} writes`)
+  assert.ok(smallestGap(writes) >= 4000, `at least four seconds apart, saw ${smallestGap(writes)}`)
 })
 
 test('one address repeating a scan is rationed whatever browser it claims, and every scan is stored or noted', async (t) => {
@@ -753,15 +871,181 @@ test('a scan table that refuses rows for another reason does not cost a lookup o
     visit(route, 'poster', { ip: ip(n) })
     await advance(5000)
   }
+  await advance(25000)
   assert.equal(stored(air).length, 0)
-  assert.ok(noted(air) >= 1, 'the first few are owned up to straight away')
+  assert.equal(noted(air), 10, 'all ten are owned up to once the scans pause, with nobody coming by')
+  assert.equal(air.markers().length, 1, 'in one note')
   assert.ok(air.count('GET', CODES) <= 2, `one lookup, and one more to check the row is still there; saw ${air.count('GET', CODES)}`)
 
-  // The rest follow in the next note, ten minutes on.
+  // And a later one, likewise.
   await advance(11 * 60000, 1000)
   visit(route, 'poster', { ip: ip(20) })
-  await advance(10000)
+  await advance(30000)
   assert.equal(noted(air), 11, 'all eleven are owned up to')
+})
+
+// ── Found by the checks of the fix itself ──────────────────────────────────
+
+test('a lone scan that cannot be counted is owned up to by its own request, with nobody coming by', async (t) => {
+  const { air, advance } = setup(t)
+  const route = await load(Q)
+  for (let n = 0; n < 20; n++) air.addCode(`typed-in-${n}`) // the day's ceiling for new rows is already reached
+  const person = visit(route, 'gala-table')
+  await advance(300)
+  assert.equal(await where(person), 'https://mnparkinsons.org/?src=gala-table', 'redirected as usual')
+  await advance(14000)
+  assert.equal(air.markers().length, 0, 'not yet: a note waits a quarter of a minute for the rest of a burst')
+  await advance(12000) // still inside the one request's own half minute
+  assert.equal(air.rowsFor('gala-table').length, 0)
+  assert.equal(air.markers().length, 1)
+  assert.equal(air.markers()[0].fields.Scan, 'NOT RECORDED · about 1 scan')
+})
+
+test('a burst that cannot be counted gets one note for all of it, and the ceiling is asked about once', async (t) => {
+  const { air, advance } = setup(t)
+  const route = await load(Q)
+  for (let n = 0; n < 20; n++) air.addCode(`typed-in-${n}`)
+  for (let n = 0; n < 30; n++) {
+    visit(route, 'gala-table', { ip: ip(n) })
+    await advance(1300, 100)
+  }
+  await advance(30000) // nobody comes by afterwards
+  assert.equal(air.markers().length, 1, 'one note')
+  assert.equal(noted(air), 30, 'covering the whole burst')
+  assert.equal(air.count('GET', CODES), 2, 'one lookup and one look at the ceiling, not one for every scan')
+  assert.equal(air.count('POST', CODES), 0)
+})
+
+test('the question to Airtable outlives a visitor who hangs up, and a stuck one is asked again', async (t) => {
+  const { air, advance, settle } = setup(t)
+  const route = await load(Q)
+  air.addCode('slide', { destination: '#/register' })
+  let stuck = 1
+  air.respond = (call) => (call.method === 'GET' && stuck-- > 0 ? { hang: true } : null) // the first lookup never answers
+
+  const first = visit(route, 'slide', { ip: ip(1) })
+  await settle()
+  assert.equal(first.done, false)
+  assert.ok(first.background.length >= 1, 'the lookup is in the platform’s care before the visitor has an answer')
+
+  // Three more scans inside the next second, and nobody after them.
+  const others = []
+  for (let n = 2; n <= 4; n++) {
+    await advance(300)
+    others.push(visit(route, 'slide', { ip: ip(n) }))
+  }
+  await advance(1000)
+  for (const person of others) {
+    assert.equal(person.done, true, 'released once the stuck question was asked again')
+    assert.equal(await where(person), 'https://mnparkinsons.org/?src=slide#/register')
+  }
+  await advance(1000)
+  assert.equal(await where(first), 'https://mnparkinsons.org/?src=slide#/register', 'even the one whose own call hung')
+  await advance(15000)
+  assert.equal(air.count('GET', CODES), 2)
+  assert.equal(air.scansFor('slide').length, 4)
+})
+
+test('a stalled edge cache does not stop Airtable being asked', async (t) => {
+  const { air, cache, advance } = setup(t)
+  const route = await load(Q)
+  air.addCode('poster', { destination: '#/submit' })
+  cache.stall = true
+  const person = visit(route, 'poster')
+  await advance(500)
+  assert.equal(person.done, true, 'not held up: Airtable was asked after a moment')
+  assert.equal(await where(person), 'https://mnparkinsons.org/?src=poster#/submit')
+  await advance(4000)
+  assert.equal(air.scansFor('poster').length, 1)
+
+  // Nor does it stop a new code being registered and counted.
+  visit(route, 'brand-new', { ip: ip(2) })
+  await advance(8000)
+  assert.equal(air.rowsFor('brand-new').length, 1)
+  assert.equal(air.scansFor('brand-new').length, 1)
+})
+
+test('after a 429 an instance comes back with one lookup and one new row in hand, not a full allowance', async (t) => {
+  const { air, advance } = setup(t)
+  const route = await load(Q)
+  let limited = 1
+  air.respond = () => (limited-- > 0 ? { status: 429 } : null)
+  visit(route, 'made-up-0', { ip: ip(0) }) // its lookup is the call that gets the 429
+  // Made-up addresses keep coming, from something that passes for a person,
+  // through the silence and for ten seconds after it.
+  for (let n = 1; n <= 164; n++) {
+    await advance(250, 50)
+    visit(route, `made-up-${n}`, { ip: ip(n) })
+  }
+  const back = air.calls.slice(1)
+  assert.ok(back.length > 0 && back[0].at - air.calls[0].at >= 31000, 'silent for the half minute')
+  const lookups = back.filter((call) => call.method === 'GET' && !/CREATED_TIME/.test(call.url.search))
+  assert.ok(lookups.length <= 5, `one lookup in hand, then one every three seconds; saw ${lookups.length}`)
+  assert.ok(air.count('POST', CODES) <= 2, `one new row in hand, then one every twelve seconds; saw ${air.count('POST', CODES)}`)
+})
+
+test('one request makes at most twenty write calls, however many of its tasks are writing', async (t) => {
+  const { air, advance } = setup(t)
+  const route = await load(Q)
+  air.addCode('poster')
+  // 190 rows are left waiting by requests that have since ended...
+  air.respond = (call) => (call.table === SCANS ? { status: 502 } : null)
+  for (let n = 0; n < 190; n++) {
+    visit(route, 'poster', { ip: ip(n) })
+    await advance(100, 50)
+  }
+  await advance(40000, 500)
+  // ...and from now on every row is refused and has to be sent alone.
+  air.respond = null
+  air.scanFields.delete('City')
+  const before = air.count('POST', SCANS)
+  visit(route, 'poster', { ip: ip(900) }) // the only request alive: every write from here is its own
+  await advance(30000)
+  const made = air.count('POST', SCANS) - before
+  assert.ok(made >= 15 && made <= 20, `saw ${made}`)
+})
+
+test('on a day with more than a hundred new rows, a row added by hand is still found', async (t) => {
+  const { air, advance } = setup(t)
+  const route = await load(Q)
+  for (let n = 0; n < 125; n++) air.addCode(`import-a-${n}`)
+  visit(route, 'gala-table', { ua: 'curl/8.4.0', accept: '*/*' }) // something looks the code up before it exists
+  await advance(5000)
+  air.addCode('gala-table', { destination: '#/submit' }) // the owner adds the row by hand
+  for (let n = 0; n < 125; n++) air.addCode(`import-b-${n}`)
+
+  const person = visit(route, 'gala-table', { ip: ip(1) }) // "no such code" is still remembered
+  await advance(6000)
+  await person.response
+  assert.equal(air.rowsFor('gala-table').length, 1, 'no second row')
+  assert.equal(air.scansFor('gala-table').length, 1, 'and the scan is counted against the hand-made one')
+})
+
+test('a note that got no clear answer is not repeated for ten minutes, and the next one says what it may repeat', async (t) => {
+  const { air, advance } = setup(t)
+  const route = await load(Q)
+  for (let n = 0; n < 20; n++) air.addCode(`typed-in-${n}`)
+  let unheard = 1
+  air.respond = (call) => (call.table === SCANS && unheard-- > 0 ? { status: 503 } : null)
+  for (let n = 0; n < 3; n++) visit(route, 'gala-table', { ip: ip(n) })
+  await advance(30000)
+  assert.equal(air.count('POST', SCANS), 1, 'the note was tried once')
+  assert.equal(air.markers().length, 0)
+
+  for (let minute = 1; minute <= 9; minute++) {
+    await advance(60000, 1000)
+    visit(route, 'typed-in-0', { ip: ip(10 + minute) }) // ordinary scans keep arriving
+    await advance(3000)
+  }
+  assert.equal(air.markers().length, 0, 'not tried again inside ten minutes')
+
+  await advance(60000, 1000)
+  for (let n = 0; n < 2; n++) visit(route, 'gala-table', { ip: ip(30 + n) }) // two more that cannot be counted
+  await advance(30000)
+  assert.deepEqual(
+    air.markers().map((row) => row.fields.Scan),
+    ['NOT RECORDED · about 5 scans (3 of them may repeat an earlier note)']
+  )
 })
 
 // ── QR pictures (review: "picture encodes the request host") ───────────────
@@ -774,8 +1058,10 @@ test('the QR picture always encodes the production address, whatever host served
     assert.equal(response.status, 200)
     return response
   }
-  const svg = await (await picture('udall-flyer.svg', 'mnparkinsons.org')).text()
-  for (const host of ['www.mnparkinsons.org', 'some-branch.mnparkinsons.pages.dev', 'localhost:8788']) {
+  // The first picture is asked for on a preview host, so the copy that gets
+  // cached for everyone is made by the host most likely to get it wrong.
+  const svg = await (await picture('udall-flyer.svg', 'some-branch.mnparkinsons.pages.dev')).text()
+  for (const host of ['mnparkinsons.org', 'www.mnparkinsons.org', 'localhost:8788']) {
     assert.equal(await (await picture('udall-flyer.svg', host)).text(), svg, `same picture from ${host}`)
   }
 
@@ -798,9 +1084,29 @@ test('the QR picture always encodes the production address, whatever host served
     }
   }
 
-  const png = new Uint8Array(await (await picture('udall-flyer.png', 'mnparkinsons.org')).arrayBuffer())
+  // The PNG: unpack it and compare it with the same symbol, module by module.
+  const png = new Uint8Array(await (await picture('udall-flyer.png', 'some-branch.mnparkinsons.pages.dev')).arrayBuffer())
   assert.deepEqual([...png.slice(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
-  const other = new Uint8Array(await (await picture('udall-flyer.png', 'some-branch.mnparkinsons.pages.dev')).arrayBuffer())
+  const view = new DataView(png.buffer)
+  const width = view.getUint32(16)
+  assert.equal(view.getUint32(20), width, 'square')
+  assert.deepEqual([png[24], png[25]], [1, 0], 'one bit per pixel, greyscale')
+  const idatLength = view.getUint32(33)
+  assert.equal(String.fromCharCode(...png.slice(37, 41)), 'IDAT')
+  const pixels = zlib.inflateSync(png.slice(41, 41 + idatLength))
+  const scale = width / size
+  assert.ok(Number.isInteger(scale) && scale >= 4, `whole pixels per module, saw ${scale}`)
+  const rowBytes = Math.ceil(width / 8) + 1
+  for (let row = 0; row < size; row++) {
+    for (let col = 0; col < size; col++) {
+      // The middle pixel of each module; a 0 bit is black.
+      const x = col * scale + (scale >> 1)
+      const y = row * scale + (scale >> 1)
+      const black = (pixels[y * rowBytes + 1 + (x >> 3)] & (0x80 >> (x & 7))) === 0
+      assert.equal(black, drawn[row][col], `PNG module ${row},${col}`)
+    }
+  }
+  const other = new Uint8Array(await (await picture('udall-flyer.png', 'mnparkinsons.org')).arrayBuffer())
   assert.deepEqual([...other], [...png])
   assert.equal(air.calls.length, 0, 'pictures never touch Airtable')
 })

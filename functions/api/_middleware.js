@@ -348,8 +348,14 @@ async function flush(env, mayPurge = false) {
       // The base is rate limited — stand down entirely and try these rows
       // again after the storm (unless a flood has refilled the buffer).
       backoffUntil = Date.now() + BACKOFF_MS
-      if (buffer.length + batch.length <= BUFFER_MAX) buffer.unshift(...batch)
-      else droppedCount += lostWithBatch
+      // The gap marker does not go back in the buffer: there it would look
+      // like one more request row, and if this batch were lost on a later
+      // attempt the number it carried would vanish. Its count goes back to
+      // the counter, and the next flush writes a fresh marker.
+      const rows = gap > 0 ? batch.slice(1) : batch
+      droppedCount += gap
+      if (buffer.length + rows.length <= BUFFER_MAX) buffer.unshift(...rows)
+      else droppedCount += rows.length
       return
     }
     if (!res.ok) {

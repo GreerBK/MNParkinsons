@@ -1,4 +1,5 @@
-// Tracked QR codes: /q/<code> records the scan, then redirects.
+// Tracked QR codes: /q/<code> redirects, and records the scan behind the
+// visitor's back.
 //
 // Every printed QR code gets its own row in the "QR Codes" Airtable table.
 // The code points here rather than straight at the site, which buys two
@@ -6,8 +7,10 @@
 // poster from the symposium flyer), and the Destination can be changed in
 // Airtable after the code is printed.
 //
-//   /q/udall-flyer       → logs the scan, 302 to the row's Destination (home
-//                          page when blank) with ?src=udall-flyer attached
+//   /q/udall-flyer       → 302 to the row's Destination (home page when
+//                          blank) with ?src=udall-flyer attached; the scan
+//                          is written to Airtable once the visitor is on
+//                          their way
 //   /q/udall-flyer.png   → the QR code picture for that link (not a scan)
 //   /q/udall-flyer.svg   → same, as a vector for large print
 //
@@ -19,10 +22,11 @@
 //
 // Three rules shape everything below:
 //
-//   1. A scan must ALWAYS end up on the site, and quickly. The visitor waits
-//      at most LOOKUP_WAIT_MS for Airtable; after that they are sent to the
-//      last destination we knew for the code, or to the home page. Counting
-//      carries on in the background where it can.
+//   1. A scan must ALWAYS end up on the site, and soon. The visitor waits a
+//      second for Airtable when we already remember where the code leads,
+//      and at most LOOKUP_WAIT_MS when we do not; after that they are sent
+//      to the remembered destination, or to the home page. Counting carries
+//      on in the background where it can.
 //   2. This route must never spend the Airtable base's shared limits: 5
 //      requests a second (then a 30-second lockout for the whole site) and a
 //      cap on total records. So every Airtable call has a time limit and
@@ -38,7 +42,17 @@
 // daily visitor code, never an IP address. Visits that are clearly not a
 // person opening the link (crawlers, link previews, scripts) are redirected
 // but not stored at all. A person's scan is either stored or, when it cannot
-// be, counted in a "NOT RECORDED" row, so a quiet table means a quiet code.
+// be, counted in a "NOT RECORDED" row, written where possible by the very
+// request that lost it. What that cannot cover: rows and counts wait in this
+// server instance's memory until they are written, so an instance Cloudflare
+// retires first takes them with it. Like the API Log, this is a traffic
+// count, not an audit trail.
+//
+// Everything here is per server instance. Cloudflare may spread one busy
+// moment over several, and nothing short of a queue in front of Airtable can
+// make several instances share the base's limit exactly; the brakes below
+// keep one or two instances comfortably inside it, and make a collision cost
+// a pause in counting rather than anybody's redirect.
 
 import qrcode from 'qrcode-generator'
 import { centralDay, clean, onApiRequest, visitorHash } from '../api/_middleware.js'
@@ -75,7 +89,16 @@ const S = {
 const CODE_RE = /^([a-z0-9][a-z0-9-]{0,39})(?:\.(png|svg))?$/
 
 // ── Time limits ────────────────────────────────────────────────────────────
-const LOOKUP_WAIT_MS = 2500 // the longest a visitor waits before being sent on
+// How long a visitor waits for Airtable before being sent on. Airtable is
+// usually quick (a fifth of a second), but its first answer after the base
+// has sat idle for a while takes three to five seconds, and on a quiet site
+// that is most scans. So: when a destination for the code is remembered from
+// an earlier scan, Airtable gets a second to confirm it and then the
+// remembered one is used. When nothing is remembered, only Airtable knows
+// where the code leads, and the visitor waits up to five seconds for it
+// before falling back to the home page.
+const REMEMBERED_WAIT_MS = 1000
+const LOOKUP_WAIT_MS = 5000
 const AIRTABLE_TIMEOUT_MS = 8000 // hard limit on any single Airtable call
 // Cloudflare gives background work 30 seconds after the response. Everything
 // a request starts is planned to finish inside this, measured from its start.
@@ -89,21 +112,32 @@ const BACKOFF_SPREAD_MS = 10000
 const CALM_MS = 120000
 // Every Airtable call this file makes, of any kind, takes a turn through one
 // gate, and turns are at least this far apart. So a server instance can never
-// send more than about three calls a second from here, whatever the mix of
-// lookups, new codes and scan writes, which leaves the rest of the site its
-// share of the base's five.
-const CALL_GAP_MS = 350
+// send more than two calls a second from here, whatever the mix of lookups,
+// new codes and scan writes: two instances busy in the same second still fit
+// inside the base's five, with one left for the rest of the site.
+const CALL_GAP_MS = 500
 const MAX_QUEUE_MS = 4000 // a call that would wait longer than this for its turn is not made
 const POLL_MS = 100
 
 // ── What we remember about codes ───────────────────────────────────────────
 const FRESH_MS = 300000 // a known row is trusted this long: a changed Destination takes effect within it
 const UNKNOWN_MS = 60000 // "no such code" is trusted this long
-const STALE_SECONDS = 7 * 86400 // how long a known row can still be reused when Airtable cannot be asked
+const STALE_SECONDS = 30 * 86400 // how long a known row can still be reused when Airtable is slow or cannot be asked
 const MEMO_MAX = 500
-// A lookup that has been out this long is probably stuck (a hung call, or a
-// visitor who hung up and took the request with them). The next scan of that
-// code asks again instead of waiting on it.
+// A row only seconds old may still gain a twin, or lose to one (see
+// createRow). An answer about such a row is trusted only until the row is
+// this old, not for five minutes: by then every row the code will ever have
+// exists, so one more lookup settles every instance on the same one. Each
+// instance adds a random extra of up to YOUNG_SPREAD_MS, so that they do not
+// all ask again in the same instant; in one data centre the first to ask
+// answers for the rest through the edge cache.
+const YOUNG_ROW_MS = 5000
+const YOUNG_SPREAD_MS = 3000
+// The edge cache normally answers in a few milliseconds. If it ever stalls,
+// Airtable is asked anyway after this long.
+const EDGE_WAIT_MS = 300
+// A lookup that has been out this long is probably stuck (a hung call). Scans
+// of that code stop waiting on it and one of them asks again.
 const HANDOVER_MS = 1500
 
 // ── Rations (each per server instance; a flood that reaches many instances
@@ -111,16 +145,34 @@ const HANDOVER_MS = 1500
 // A ration is a bucket of `capacity` tokens that regains one every `refillMs`.
 const ration = (capacity, refillMs) => ({ capacity, refillMs, tokens: capacity, at: 0 })
 // Lookups of codes that are not remembered: up to 8 waiting for the gate at
-// once, then one every 3 seconds. Made-up addresses are the only thing that
-// needs many, and every lookup is an Airtable API call the workspace pays for.
+// once, then one every 3 seconds. Every lookup is an Airtable API call the
+// workspace pays for, and made-up addresses can ask for any number. The cost
+// falls on real codes too: while the share is spent (dozens of different
+// codes first scanned in the same minute, or someone walking made-up
+// addresses), a code this data centre has never seen lands on the home page
+// and its scan is only counted in a NOT RECORDED row.
 const personLookups = ration(8, 3000)
 const otherLookups = ration(1, 10000) // crawlers, previews and HEAD get a thinner share
 // Rows created for never-seen codes: a burst brake here, plus DAILY_CREATE_MAX,
 // which is counted in Airtable and so is shared by every instance.
 const createRation = ration(5, 12000)
 const DAILY_CREATE_MAX = 20 // about this many new QR Codes rows per 24 hours before self-creation pauses
+// Once Airtable has said the day's ceiling is reached, it is not asked again
+// for this long: under a flood of made-up addresses every one of those
+// questions would be an API call that can only be answered "no".
+const CEILING_MEMORY_MS = 600000
 const TWIN_CHECK_DELAY_MS = 1200
 const TWIN_CHECK_NEEDS_MS = 12000 // skip the twin check when the request is short of time
+// Instances in one data centre take turns registering a new code: the first
+// leaves a mark in the edge cache, and the others wait up to CLAIM_MS for its
+// row instead of each spending three Airtable calls on a row of their own.
+const CLAIM_MS = 7000
+const CLAIM_POLL_MS = 500
+// Instances in different data centres cannot see each other's mark. Each
+// waits a random moment, up to this long, before it registers: their calls
+// no longer land in the same second, and the later ones usually find the
+// first one's row already there and make none of their own.
+const REGISTER_SPREAD_MS = 2000
 // Scan rows. One network address may add 300 at once and then one every two
 // minutes: roomy enough for a hall of people on one venue Wi-Fi, far too slow
 // for a loop, and not something a change of browser name gets around. An
@@ -131,13 +183,22 @@ const addressScans = new Map() // address key → ration
 const instanceScans = ration(600, 6000)
 
 // ── Writing scans ──────────────────────────────────────────────────────────
-// Rows pool in memory and go out up to 10 per Airtable call (its batch
-// limit), normally no more than one call per FLUSH_GAP_MS from this instance.
-const FLUSH_DELAY_MS = 1500 // let a burst pool into one call
+// Rows pool in memory and go out up to BATCH_ROWS per Airtable call (its
+// batch limit). The first rows after a quiet spell wait FLUSH_DELAY_MS, plus a
+// random part of FLUSH_SPREAD_MS so that instances which start together do
+// not write together. After that a full batch goes a second after the last
+// write, and a part-filled one waits POOL_MS for more rows: several instances
+// each receiving a trickle must not each make a call a second, because
+// between them that is the base's whole allowance.
+const BATCH_ROWS = 10
+const FLUSH_DELAY_MS = 1500
+const FLUSH_SPREAD_MS = 1500
 const FLUSH_GAP_MS = 1000
-// With this many rows waiting (a crowd, or the end of a lockout) the one-a-
-// second politeness is dropped and rows go out as fast as the gate allows,
-// so a backlog clears while the requests that can still write it are alive.
+const POOL_MS = 4000
+// With this many rows waiting (a crowd) the one-a-second politeness is
+// dropped and rows go out as fast as the gate allows, so a backlog clears
+// while the requests that can still write it are alive. Not straight after a
+// lockout, though: see CALM_MS.
 const BACKLOG_ROWS = 30
 const FLUSH_POLL_MS = 100
 // A write run says "still here" before each Airtable call. The longest it can
@@ -145,27 +206,43 @@ const FLUSH_POLL_MS = 100
 // beyond that means its request was cut off, and another request takes over.
 const FLUSH_STALE_MS = MAX_QUEUE_MS + AIRTABLE_TIMEOUT_MS + 3000
 // Cloudflare caps the calls one request may make (50 on the free plan), so
-// one request writes at most this many batches before leaving the rest to
-// the next.
+// one request attempts at most this many writes, however many of its tasks
+// are writing, before leaving the rest to the next.
 const WRITES_PER_REQUEST_MAX = 20
+const budgets = new WeakMap() // request context → { writes } left
 const RETRY_PAUSE_MS = 4000 // after a write that could not be made or failed
 const KICK_GAP_MS = 3000
-// "NOT RECORDED" rows: the first waits a little so it can cover a whole burst
-// rather than its first scan, and they are at least ten minutes apart.
-const MARKER_DELAY_MS = 15000
-const MARKER_GAP_MS = 600000
+// "NOT RECORDED" rows. A note waits until the losses have paused for a
+// quarter of a minute, so that one note covers a whole burst, but never
+// longer than two minutes after the first of them. The request that lost a
+// scan stays for that wait when it can, because nobody else may come by.
+const NOTE_QUIET_MS = 15000
+const NOTE_CAP_MS = 120000
+// A note whose fate is unknown (no answer, or a server error) or that was
+// refused is not tried again for ten minutes; and while Airtable's latest
+// answer to us was a failure, a note is only attempted once its losses are
+// this old. A note sent into an outage would be lost with the rest.
+const NOTE_RETRY_MS = 600000
+// Five notes may go out close together (a long event), then one every ten
+// minutes: under a flood the notes themselves must not fill the table.
+const notes = ration(5, 600000)
 const BUFFER_MAX = 200
 
 const buffer = [] // { fields, code, solo? }
 let dropped = 0 // people's scans not stored since the last NOT RECORDED row
 let firstDropAt = 0 // when the first of those happened
-let lastMarkerAt = 0 // when a NOT RECORDED row was last attempted
+let lastDropAt = 0 // when the latest of them happened
+let unsure = 0 // how many of `dropped` were in a note that may or may not have been saved
+let noteHoldUntil = 0 // no NOT RECORDED row is attempted before this
 let lastOkAt = 0 // when Airtable last answered any of our calls with success
+let lastBadAt = 0 // when a call of ours last got a 429, a server error or no answer
+let ceilingUntil = 0 // the day's new-row ceiling was reached: do not ask about it again until then
 let flushOwner = 0 // serial number of the write run that currently has the buffer
 let flushBeatAt = 0 // when that run last said "still here"; 0 = no run
 let flushSerial = 0
 let inHand = 0 // rows the current write run has taken out of the buffer for the call it is making
 let lastWriteAt = 0
+let writersUntil = 0 // the latest deadline among the requests that have come to write
 let lastKickAt = 0
 let writeHoldUntil = 0 // pause after a failed write
 let backoffUntil = 0 // Airtable said 429: no calls of any kind from this route until then
@@ -183,6 +260,9 @@ const CREATE_STALE_MS = 26000
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const WAITING = Symbol('waiting')
+// An edge-cache call, given a moment and no more: undefined if it has not
+// answered by then. Nothing here may hang on the cache.
+const soon = (promise) => Promise.race([promise, sleep(EDGE_WAIT_MS)])
 
 function refill(bucket, now) {
   if (bucket.at === 0) bucket.at = now
@@ -232,10 +312,8 @@ export async function onRequest(context) {
   }
 
   const person = isPerson(request)
-  const { entry, late } = await lookupCode(context, code, person, deadline)
   // `late` is the answer still on its way after the visitor has been sent on.
-  // Let it finish, so it is at least remembered for the next scan.
-  if (late) keepAlive(context, late)
+  const { entry, late } = await lookupCode(context, code, person, deadline)
 
   if (entry) {
     if (person) {
@@ -302,6 +380,11 @@ function isPerson(request) {
   // navigation (an <img>, a fetch() call) is not someone opening the link.
   const mode = headers.get('sec-fetch-mode')
   if (mode && mode !== 'navigate') return false
+  // A page framed inside another page (<iframe>, <embed>) is a navigation
+  // too, but nobody opened the link: any site could plant one. Opening a link
+  // (camera, address bar, a tap, an in-app browser) always says "document".
+  const dest = headers.get('sec-fetch-dest')
+  if (dest && dest !== 'document') return false
   // Older ways a browser or app marks a page it is loading for a preview.
   const purpose = `${headers.get('purpose') || ''} ${headers.get('x-purpose') || ''} ${headers.get('x-moz') || ''}`
   if (/prefetch|prerender|preview/i.test(purpose)) return false
@@ -336,6 +419,10 @@ function destinationFor(raw, origin, code) {
       const ours = parsed.origin === origin || isOurHost(parsed.hostname)
       // An old http:// link to our own site: same page, over https.
       if (ours && parsed.protocol === 'http:' && parsed.origin !== origin) parsed.protocol = 'https:'
+      // "www.example.org/page": the one way of leaving off https:// that
+      // nobody types by accident.
+      const typedWww =
+        !hasScheme && !onThisSite && /^www\./i.test(text) && !parsed.port && parsed.hostname.split('.').length >= 3
       const usable =
         !parsed.username &&
         !parsed.password && // "name@example.org" is an email address, not a page
@@ -343,10 +430,10 @@ function destinationFor(raw, origin, code) {
           (parsed.protocol === 'https:' &&
             // Our own names need no scheme ("mnparkinsons.org/#/submit") but
             // take no port. Any other site must be a full https:// address
-            // with a real-looking host name: a bare word, a file name or an
-            // address typed without https:// is more likely a slip than a
-            // destination.
-            (ours ? !parsed.port : hasScheme && looksLikeHost(parsed.hostname))))
+            // (or start with www.) and have a real-looking host name: a bare
+            // word, a file name or "zoom.us/j/1" typed without https:// is
+            // more likely a slip than a destination.
+            (ours ? !parsed.port : (hasScheme || typedWww) && looksLikeHost(parsed.hostname))))
       if (usable) target = parsed
     } catch {
       target = home
@@ -418,16 +505,27 @@ async function airtable(env, token, path, init, deadline) {
     if (res.status === 429) {
       backoffUntil = Date.now() + BACKOFF_MS + Math.floor(Math.random() * BACKOFF_SPREAD_MS)
       calmUntil = backoffUntil + CALM_MS
+      // Come back with one lookup and one new row in hand, not the full
+      // allowances that would otherwise have built up during the silence:
+      // several instances returning with those is how the base gets tripped
+      // again the moment it recovers.
+      for (const bucket of [personLookups, otherLookups, createRation]) {
+        bucket.tokens = Math.min(bucket.tokens, 1)
+        bucket.at = backoffUntil
+      }
     }
-    if (res.ok) lastOkAt = Date.now()
     let body = null
     try {
       body = await res.json()
     } catch {
       body = null
     }
+    // A refusal of the request itself (4xx) says nothing about Airtable's health.
+    if (res.ok) lastOkAt = Date.now()
+    else if (res.status === 429 || res.status >= 500) lastBadAt = Date.now()
     return { status: res.status, sent: true, timedOut: false, body }
   } catch {
+    lastBadAt = Date.now()
     return { status: 0, sent: true, timedOut: controller.signal.aborted, body: null }
   } finally {
     clearTimeout(timer)
@@ -457,12 +555,12 @@ async function listCodes(env, formula, max, deadline) {
     .sort((a, b) => a.created - b.created || (a.id < b.id ? -1 : 1))
 }
 
-// The code's row: { id, destination }, null for "no such row", or undefined
-// when Airtable could not be asked.
+// The code's row: { id, destination, created }, null for "no such row", or
+// undefined when Airtable could not be asked.
 async function fetchCode(env, code, deadline) {
   const rows = await listCodes(env, codeFormula(code), 5, deadline)
   if (!rows) return undefined
-  return rows.length ? { id: rows[0].id, destination: rows[0].destination } : null
+  return rows.length ? { id: rows[0].id, destination: rows[0].destination, created: rows[0].created } : null
 }
 
 // ── Remembering answers ────────────────────────────────────────────────────
@@ -476,11 +574,13 @@ async function fetchCode(env, code, deadline) {
 // data centre and may be cleared early.)
 
 const cacheKeyFor = (code) => `https://qr-lookup.invalid/v2/${code}`
-const isFresh = (known, now) => now - known.at < (known.entry ? FRESH_MS : UNKNOWN_MS)
+// `life` is how long this particular answer is trusted, when that is shorter
+// than usual (a row only seconds old); 0 means the usual time.
+const isFresh = (known, now) => now - known.at < (known.life || (known.entry ? FRESH_MS : UNKNOWN_MS))
 
-function memoSet(code, entry, at) {
+function memoSet(code, entry, at, life = 0) {
   memo.delete(code)
-  memo.set(code, { entry, at })
+  memo.set(code, { entry, at, life })
   if (memo.size > MEMO_MAX) memo.delete(memo.keys().next().value)
 }
 
@@ -491,20 +591,29 @@ async function readEdge(code) {
     const data = await hit.json()
     const entry = data ? data.entry : undefined
     const sound = entry === null || (entry && typeof entry.id === 'string' && typeof entry.destination === 'string')
-    if (sound && typeof data.at === 'number') return { entry, at: data.at }
+    if (sound && typeof data.at === 'number') {
+      const life = Number(data.life) > 0 ? Math.min(Number(data.life), FRESH_MS) : 0
+      return { entry, at: data.at, life }
+    }
   } catch {
     // no edge cache (local tests), or an entry we cannot read
   }
   return undefined
 }
 
-function rememberCode(context, code, entry) {
+// A random extra on a young row's life, different on every instance.
+const spread = () => Math.floor(Math.random() * YOUNG_SPREAD_MS)
+
+// `created` is when the row was made, where that is known: a row only seconds
+// old is remembered for seconds, because a twin may still be on its way.
+function rememberCode(context, code, entry, created = 0) {
   const at = Date.now()
-  memoSet(code, entry, at)
+  const life = entry && created && at - created < YOUNG_ROW_MS ? Math.max(1000, created + YOUNG_ROW_MS - at) : 0
+  memoSet(code, entry, at, life ? life + spread() : 0)
   try {
     const ttl = entry ? STALE_SECONDS : UNKNOWN_MS / 1000
     const put = caches.default
-      .put(cacheKeyFor(code), Response.json({ entry, at }, { headers: { 'Cache-Control': `public, max-age=${ttl}` } }))
+      .put(cacheKeyFor(code), Response.json({ entry, at, life }, { headers: { 'Cache-Control': `public, max-age=${ttl}` } }))
       .catch(() => {})
     keepAlive(context, put)
   } catch {
@@ -525,7 +634,7 @@ async function doubtCode(code) {
   if (forgotten.size > MEMO_MAX) forgotten.delete(forgotten.keys().next().value)
   memo.delete(code)
   try {
-    await caches.default.delete(cacheKeyFor(code))
+    await soon(caches.default.delete(cacheKeyFor(code)).catch(() => {}))
   } catch {
     // nothing to forget
   }
@@ -536,7 +645,7 @@ async function doubtCode(code) {
 // Resolves to { entry, late }:
 //   entry  the row { id, destination } (possibly a remembered one), null when
 //          there is definitely no such row, or undefined when nobody could
-//          say within LOOKUP_WAIT_MS.
+//          say in the time allowed (REMEMBERED_WAIT_MS, LOOKUP_WAIT_MS).
 //   late   present when the answer is still on its way; resolves to it (row,
 //          null, or undefined if it never came).
 async function lookupCode(context, code, person, deadline) {
@@ -547,44 +656,75 @@ async function lookupCode(context, code, person, deadline) {
   if (held && isFresh(held, Date.now())) return { entry: held.entry }
 
   // Everything slower than memory, the edge cache included, races the clock.
+  // The question is kept alive from the moment it is asked, not only once the
+  // visitor has been sent on: if this visitor hangs up first (a double tap
+  // cancels the first request), the answer must still arrive and be
+  // remembered, because the next scan of the code is waiting on it.
+  const started = Date.now()
+  let found = WAITING
   const answer = findOut(context, code, person, deadline)
-  const first = await Promise.race([answer, sleep(LOOKUP_WAIT_MS).then(() => WAITING)])
-  if (first !== WAITING && first !== undefined) return { entry: first }
-  const known = memo.get(code) // the edge cache may have filled this in meanwhile
+    .catch(() => undefined)
+    .then((value) => (found = value))
+  keepAlive(context, answer)
+  for (;;) {
+    await Promise.race([answer, sleep(POLL_MS)])
+    if (found !== WAITING) break
+    const known = memo.get(code) // the edge cache, or another request, may have filled this in meanwhile
+    // An answer another request has just learned is as good as our own
+    // (ours, perhaps stuck, carries on behind and is simply remembered).
+    if (known && known.at >= started) return { entry: known.entry }
+    if (Date.now() - started >= (known && known.entry ? REMEMBERED_WAIT_MS : LOOKUP_WAIT_MS)) break
+  }
+  if (found !== WAITING && found !== undefined) return { entry: found }
+  const known = memo.get(code)
   const remembered = known && known.entry ? known.entry : undefined
-  return first === WAITING ? { entry: remembered, late: answer } : { entry: remembered }
+  return found === WAITING ? { entry: remembered, late: answer } : { entry: remembered }
 }
 
 async function findOut(context, code, person, deadline) {
-  // Another instance in this data centre may have asked more recently.
-  const shared = await readEdge(code)
-  const held = memo.get(code)
-  if (shared && (!held || shared.at > held.at)) memoSet(code, shared.entry, shared.at)
+  // Another instance in this data centre may have asked more recently. The
+  // read gets a moment and no more; an answer that comes later is still kept.
+  const edge = readEdge(code).then((shared) => {
+    const held = memo.get(code)
+    if (shared && (!held || shared.at > held.at)) {
+      memoSet(code, shared.entry, shared.at, shared.life ? shared.life + spread() : 0)
+    }
+  })
+  await soon(edge)
   const known = memo.get(code)
   if (known && isFresh(known, Date.now())) return known.entry
   return askAirtable(context, code, person, deadline)
 }
 
-// Ask Airtable about a code: one question per code at a time, within the
-// lookup ration, and not at all while the base is rate limited. Requests that
-// arrive just after a question went out wait for its answer instead of asking
-// again: that is what keeps a room of people scanning one code at the same
-// moment from becoming a burst of Airtable calls.
+// Ask Airtable about a code, within the lookup ration, and not at all while
+// the base is rate limited. Requests that arrive just after a question went
+// out wait for its answer instead of asking again: that is what keeps a room
+// of people scanning one code at the same moment from becoming a burst of
+// Airtable calls. They wait only until the question looks stuck
+// (HANDOVER_MS); then one of them asks again and the rest follow that.
 function askAirtable(context, code, person, deadline) {
   const now = Date.now()
   const flight = lookups.get(code)
-  const wait = () => follow(lookups, code, flight, Math.min(deadline, now + LOOKUP_STALE_MS), false)
-  if (flight && now - flight < HANDOVER_MS) return wait()
+  if (flight && now - flight < HANDOVER_MS) {
+    return follow(lookups, code, flight, Math.min(deadline, flight + HANDOVER_MS), false).then((found) =>
+      found === undefined && lookups.has(code) && Date.now() < deadline
+        ? askAirtable(context, code, person, deadline)
+        : found
+    )
+  }
   // None out, or the one that is out looks stuck: ask (again) if we may.
   if (now < backoffUntil || !take(person ? personLookups : otherLookups, now)) {
-    return flight && now - flight < LOOKUP_STALE_MS ? wait() : Promise.resolve(undefined)
+    return flight && now - flight < LOOKUP_STALE_MS
+      ? follow(lookups, code, flight, Math.min(deadline, now + LOOKUP_STALE_MS), false)
+      : Promise.resolve(undefined)
   }
   expire(lookups, LOOKUP_STALE_MS, now)
   lookups.set(code, now)
   return fetchCode(context.env, code, deadline).then((found) => {
-    if (found !== undefined) rememberCode(context, code, found)
+    const entry = found ? { id: found.id, destination: found.destination } : found
+    if (entry !== undefined) rememberCode(context, code, entry, found ? found.created : 0)
     if (lookups.get(code) === now) lookups.delete(code)
-    if (found !== undefined) return found
+    if (entry !== undefined) return entry
     // Our own call failed; another request's may have got through meanwhile.
     const known = memo.get(code)
     return known && known.at >= now ? known.entry : undefined
@@ -629,10 +769,18 @@ async function createCode(context, code, deadline) {
       const row = await follow(creating, code, flight, Math.min(deadline, flight + CREATE_STALE_MS), true)
       return row ? row.id : ''
     }
-    if (now < backoffUntil || !take(createRation, now)) return ''
+    if (now < backoffUntil || now < ceilingUntil) return ''
     expire(creating, CREATE_STALE_MS, now)
     creating.set(code, now)
     try {
+      // Another instance in this data centre may be registering this very
+      // code right now (a QR on a slide, a room of phones): use its row.
+      const theirs = await awaitClaim(code, deadline)
+      if (theirs) return theirs.id
+      if (Date.now() < backoffUntil || !take(createRation, Date.now())) return ''
+      leaveClaim(context, code)
+      const pause = Math.floor(Math.random() * REGISTER_SPREAD_MS)
+      if (pause > 0) await sleep(pause)
       return await createRow(context, code, deadline)
     } finally {
       if (creating.get(code) === now) creating.delete(code)
@@ -640,6 +788,54 @@ async function createCode(context, code, deadline) {
   } catch (err) {
     console.warn('qr code create failed', err && err.message)
     return ''
+  }
+}
+
+// The mark an instance leaves in the edge cache while it registers a code.
+// Like everything shared here it is a time that expires, not a flag; and it
+// is only a courtesy: instances that arrive in the same instant, or in
+// different data centres, never see each other's mark, and the twin rule in
+// createRow covers them.
+const claimKeyFor = (code) => `https://qr-lookup.invalid/v2/registering/${code}`
+
+function leaveClaim(context, code) {
+  try {
+    const put = caches.default
+      .put(claimKeyFor(code), Response.json({ at: Date.now() }, { headers: { 'Cache-Control': 'public, max-age=10' } }))
+      .catch(() => {})
+    keepAlive(context, put)
+  } catch {
+    // no edge cache
+  }
+}
+
+async function readClaim(code) {
+  try {
+    const hit = await caches.default.match(claimKeyFor(code))
+    return hit ? Number((await hit.json()).at) || 0 : 0
+  } catch {
+    return 0
+  }
+}
+
+// The row another instance has registered for this code, waiting for it while
+// that instance's mark is fresh. undefined when there is nothing to wait for.
+async function awaitClaim(code, deadline) {
+  let claimedAt = 0
+  for (;;) {
+    const shared = await soon(readEdge(code))
+    const now = Date.now()
+    if (shared && shared.entry && isFresh(shared, now)) {
+      // Remember it for what is left of its life, as learned now: requests
+      // on this instance that are waiting for the row look for an answer
+      // newer than their own start.
+      const left = Math.max(1, (shared.life || FRESH_MS) - (now - shared.at))
+      memoSet(code, shared.entry, now, shared.life ? left + spread() : left)
+      return shared.entry
+    }
+    if (!claimedAt) claimedAt = (await soon(readClaim(code))) || 0
+    if (!claimedAt || now - claimedAt >= CLAIM_MS || now + CLAIM_POLL_MS + 1000 > deadline) return undefined
+    await sleep(CLAIM_POLL_MS)
   }
 }
 
@@ -655,13 +851,23 @@ async function createRow(context, code, deadline) {
   const recently = `DATETIME_DIFF(NOW(),CREATED_TIME(),'hours')<24`
   const seen = await listCodes(env, `OR(${codeFormula(code)},${recently})`, 100, deadline)
   if (!seen) return ''
-  const existing = seen.find((row) => row.code === code)
+  let existing = seen.find((row) => row.code === code)
+  if (!existing && seen.length >= 100) {
+    // The list is cut at 100 rows. On a day with that many new rows (an
+    // import, say) the code's own row may be past the cut: ask for it alone.
+    const own = await listCodes(env, codeFormula(code), 5, deadline)
+    if (!own) return ''
+    existing = own[0]
+  }
   if (existing) {
-    rememberCode(context, code, { id: existing.id, destination: existing.destination })
+    rememberCode(context, code, { id: existing.id, destination: existing.destination }, existing.created)
     return existing.id
   }
   const dayAgo = Date.now() - 86400000
-  if (seen.filter((row) => row.created > dayAgo).length >= DAILY_CREATE_MAX) return ''
+  if (seen.filter((row) => row.created > dayAgo).length >= DAILY_CREATE_MAX) {
+    ceilingUntil = Date.now() + CEILING_MEMORY_MS
+    return ''
+  }
 
   const post = (fields) =>
     airtable(env, env.AIRTABLE_WRITE_PAT, CODES_TABLE_ID, { method: 'POST', body: JSON.stringify({ fields }) }, deadline)
@@ -680,17 +886,24 @@ async function createRow(context, code, deadline) {
   }
 
   // Two instances can both get this far for the same brand-new code (a QR on
-  // a slide, first scanned by a whole room). Give the other one a moment to
-  // land, then count against whichever row every lookup will settle on. The
-  // other row is left in place as a spare with no scans: deleting it could
-  // pull a row out from under an instance that is already using it.
+  // a slide, first scanned by a whole room, in the same instant or in
+  // different data centres). Give the other one a moment to land, then count
+  // against whichever row every lookup will settle on. The other row is left
+  // in place as a spare: deleting it could pull a row out from under an
+  // instance that is already using it. Whatever this check saw, the row is
+  // seconds old, so it is remembered only briefly (see YOUNG_ROW_MS): a twin
+  // that lands later, or a check that could not be made, is caught by the
+  // next lookup instead of standing for five minutes.
+  const madeAt = Date.now()
   let winner = { id, destination: '' }
+  let checked = false
   if (deadline - Date.now() > TWIN_CHECK_NEEDS_MS) {
     await sleep(TWIN_CHECK_DELAY_MS)
     const rows = await listCodes(env, codeFormula(code), 5, deadline)
+    checked = Boolean(rows)
     if (rows && rows.length > 1) winner = { id: rows[0].id, destination: rows[0].destination }
   }
-  rememberCode(context, code, winner)
+  rememberCode(context, code, winner, checked ? madeAt : Date.now())
   return winner.id
 }
 
@@ -723,8 +936,20 @@ function admit(address, now) {
 // A person's scan that will not be stored: remember it for the next
 // NOT RECORDED row.
 function lose(count) {
-  if (dropped === 0) firstDropAt = Date.now()
+  const now = Date.now()
+  if (dropped === 0) firstDropAt = now
+  lastDropAt = now
   dropped += count
+}
+
+// What is left of this request's allowance of write calls.
+function budgetFor(context) {
+  let budget = budgets.get(context)
+  if (!budget) {
+    budget = { writes: WRITES_PER_REQUEST_MAX }
+    budgets.set(context, budget)
+  }
+  return budget
 }
 
 // Buffer the scan and schedule the write, without ever throwing: logging
@@ -749,16 +974,16 @@ function recordScan(context, code, id, deadline) {
     const task = Promise.all([visitorHash(env, request), id]).then(([hash, recordId]) => {
       // No row to count against (Airtable could not be asked, or the code
       // could not be registered), or over a limit: not stored, but counted,
-      // so a NOT RECORDED row can say roughly how many went missing.
+      // so a NOT RECORDED row can say roughly how many went missing. This
+      // request then stays, if it has the time, to write that row itself.
       if (!recordId || !admit(address, Date.now())) {
         lose(1)
-        kickFlush(context, deadline)
-        return
+        return flushSoon(context, deadline)
       }
       fields[S.code] = [recordId]
       if (hash) fields[S.visitor] = hash
       buffer.push({ fields, code })
-      return flushSoon(env, deadline)
+      return flushSoon(context, deadline)
     })
     keepAlive(context, task.catch(() => {}))
   } catch {
@@ -766,33 +991,38 @@ function recordScan(context, code, id, deadline) {
   }
 }
 
-// A NOT RECORDED row is due once the first loss is a little old, the last
-// attempt is ten minutes old, and Airtable has answered something since the
-// losses began: a note sent into an outage would only be lost with the rest.
-// (After ten minutes without any answer it is tried anyway.)
-const markerDue = (now) =>
-  dropped > 0 &&
-  now - firstDropAt >= MARKER_DELAY_MS &&
-  now - lastMarkerAt >= MARKER_GAP_MS &&
-  (lastOkAt >= firstDropAt || now - firstDropAt >= MARKER_GAP_MS)
+// When the NOT RECORDED row for the scans lost so far falls due: once the
+// losses have paused (or the first is two minutes old), a note is in the
+// ration, no earlier attempt is still being waited out, and Airtable's latest
+// answer to us was a good one. Infinity when nothing is owed.
+function noteDueAt(now) {
+  if (dropped === 0) return Infinity
+  let due = Math.min(lastDropAt + NOTE_QUIET_MS, firstDropAt + NOTE_CAP_MS)
+  if (lastOkAt < lastBadAt) due = Math.max(due, firstDropAt + NOTE_RETRY_MS)
+  if (!refill(notes, now)) due = Math.max(due, notes.at + notes.refillMs)
+  return Math.max(due, noteHoldUntil)
+}
+const markerDue = (now) => now >= noteDueAt(now)
 const pendingWork = (now) => buffer.length > 0 || markerDue(now)
 
-// Start a flusher if there is unwritten work and nobody has done so in the
-// last few seconds. Called on every scan, and by the API middleware on every
-// API request (see the registration below), so rows that one request could
-// not write are picked up by the next visitor's ordinary browsing instead of
+// Start a flusher if there is work this request could do (rows waiting, or a
+// note that falls due while it is alive) and nobody has done so in the last
+// few seconds. Called on every scan, and by the API middleware on every API
+// request (see the registration below), so rows that one request could not
+// write are picked up by the next visitor's ordinary browsing instead of
 // waiting for another scan.
 function kickFlush(context, deadline) {
   try {
     const { env } = context
     if (!env.AIRTABLE_WRITE_PAT || !env.AIRTABLE_BASE_ID) return
     const now = Date.now()
-    if (!pendingWork(now) || now - lastKickAt < KICK_GAP_MS) return
+    const work = buffer.length > 0 || noteDueAt(now) + AIRTABLE_TIMEOUT_MS + 200 < deadline
+    if (!work || now - lastKickAt < KICK_GAP_MS) return
     // A request that cannot outlast the current pause would only use up the
     // kick: leave it for one that can.
     if (Math.max(backoffUntil, writeHoldUntil) + AIRTABLE_TIMEOUT_MS > deadline) return
     lastKickAt = now
-    keepAlive(context, flushSoon(env, deadline).catch(() => {}))
+    keepAlive(context, flushSoon(context, deadline).catch(() => {}))
   } catch {
     // never affect the response
   }
@@ -804,13 +1034,26 @@ onApiRequest((context) => kickFlush(context, Date.now() + WINDOW_MS))
 // request's time is nearly up. (Simply leaving when another request was
 // already writing is how rows used to be left behind with nobody to write
 // them.) Only one request writes at a time; the others watch.
-async function flushSoon(env, deadline) {
-  const budget = { writes: WRITES_PER_REQUEST_MAX }
-  await sleep(FLUSH_DELAY_MS)
+async function flushSoon(context, deadline) {
+  const { env } = context
+  const budget = budgetFor(context)
+  if (deadline > writersUntil) writersUntil = deadline
+  await sleep(FLUSH_DELAY_MS + Math.floor(Math.random() * FLUSH_SPREAD_MS))
   for (;;) {
     const now = Date.now()
     // A write is only started if its full time limit still fits.
-    if (!pendingWork(now) || now + AIRTABLE_TIMEOUT_MS > deadline || budget.writes <= 0) return
+    if (now >= lastStart(deadline) || budget.writes <= 0) return
+    if (!pendingWork(now)) {
+      // Nothing to write yet. If scans have been lost, stay until their note
+      // falls due, provided this request can outlast the wait: after a lone
+      // scan on a quiet day nobody else would come by to write it. (When
+      // losses keep coming the due time keeps moving, and each request
+      // leaves it to those behind it.)
+      const due = noteDueAt(now)
+      if (due + AIRTABLE_TIMEOUT_MS + 200 > deadline) return
+      await sleep(due - now + 20)
+      continue
+    }
     const hold = Math.max(backoffUntil, writeHoldUntil)
     if (now < hold) {
       if (hold + AIRTABLE_TIMEOUT_MS > deadline) return // cannot outwait it: a later request will write these
@@ -819,16 +1062,27 @@ async function flushSoon(env, deadline) {
       await sleep(FLUSH_POLL_MS) // another request is writing
     } else {
       await runFlush(env, deadline, budget)
+      // Whatever made the run stop, never come straight back round without
+      // the clock having moved.
+      if (Date.now() === now) await sleep(FLUSH_POLL_MS)
     }
   }
 }
 
+// The last moment a request may start a write: the call's full time limit
+// must still fit inside the request's own.
+const lastStart = (deadline) => deadline - AIRTABLE_TIMEOUT_MS - 250
+
 // A stand-in row for scans that were not stored, so a quiet table never
 // means "nobody scanned" when it was really "limits or errors". It carries
-// the time the first of them happened and is linked to no code.
-function markerFields(count, since) {
+// the time the first of them happened and is linked to no code. `repeated`
+// is how many of the count were already in an earlier note that got no clear
+// answer from Airtable: if that note was saved after all, adding the two
+// would count those scans twice.
+function markerFields(count, repeated, since) {
+  const again = repeated > 0 ? ` (${repeated} of them may repeat an earlier note)` : ''
   return {
-    [S.summary]: `NOT RECORDED · about ${count} scan${count === 1 ? '' : 's'}`,
+    [S.summary]: `NOT RECORDED · about ${count} scan${count === 1 ? '' : 's'}${again}`,
     [S.time]: new Date(since).toISOString(),
   }
 }
@@ -850,10 +1104,33 @@ async function runFlush(env, deadline, budget) {
   if (inHand > 0) lose(inHand)
   inHand = 0
   try {
-    for (; budget.writes > 0; budget.writes--) {
-      const fast = buffer.length >= BACKLOG_ROWS && Date.now() >= calmUntil
-      const wait = lastWriteAt + (fast ? 0 : FLUSH_GAP_MS) - Date.now()
-      if (wait > 0) await sleep(wait)
+    while (budget.writes > 0) {
+      // Pace. With a backlog: as fast as the gate allows. Something that
+      // gains nothing by waiting (a full batch, a row that must go alone, a
+      // note that is due): a second after the last write. A part-filled
+      // batch: POOL_MS after it, sooner if it fills meanwhile.
+      const latest = lastStart(deadline)
+      for (;;) {
+        const at = Date.now()
+        const fast = buffer.length >= BACKLOG_ROWS && at >= calmUntil
+        const ready = buffer.length >= BATCH_ROWS || (buffer.length > 0 && buffer[0].solo) || markerDue(at)
+        let due = lastWriteAt + (fast ? 0 : ready ? FLUSH_GAP_MS : POOL_MS)
+        if (due > latest) {
+          // This request will be gone before the pool time is up. If a
+          // younger request is here to write, leave the rows to it. If not,
+          // better a small batch now than rows left behind for whoever
+          // happens to come next.
+          if (writersUntil > deadline) {
+            if (at >= latest) return
+          } else {
+            due = Math.max(latest, lastWriteAt + FLUSH_GAP_MS)
+          }
+        }
+        if (due <= at) break
+        await sleep(Math.min(due - at, 250))
+        if (flushOwner !== me) return
+        flushBeatAt = Date.now() // still here, just waiting
+      }
       const now = Date.now()
       if (flushOwner !== me || !pendingWork(now)) return
       if (now < backoffUntil || now < writeHoldUntil || now + AIRTABLE_TIMEOUT_MS > deadline) return
@@ -861,22 +1138,35 @@ async function runFlush(env, deadline, budget) {
 
       const alone = buffer.length > 0 && buffer[0].solo
       const withMarker = !alone && markerDue(now)
-      const rows = alone ? buffer.splice(0, 1) : takeBatch(withMarker ? 9 : 10)
+      const rows = alone ? buffer.splice(0, 1) : takeBatch(withMarker ? BATCH_ROWS - 1 : BATCH_ROWS)
       const records = rows.map((row) => ({ fields: row.fields }))
-      // The note is counted as written only once Airtable says so: until then
-      // the scans it covers stay owed, so being cut off here cannot lose them.
+      // The note. Until Airtable answers, the books assume the worst of it:
+      // the scans it covers stay owed, it counts as possibly saved, and it is
+      // not to be tried again for ten minutes. That is also exactly the right
+      // state if this request is cut off before any answer comes. A clear
+      // answer, either way, then corrects the books below.
       const noted = withMarker ? dropped : 0
-      const markerBefore = lastMarkerAt
+      const before = { hold: noteHoldUntil, unsure }
       if (withMarker) {
-        records.unshift({ fields: markerFields(noted, firstDropAt) })
-        lastMarkerAt = now
+        records.unshift({ fields: markerFields(noted, unsure, firstDropAt) })
+        notes.tokens -= 1
+        noteHoldUntil = now + NOTE_RETRY_MS
+        unsure = noted
       }
-      const settleNote = () => {
+      const noteSaved = () => {
         dropped -= noted
+        unsure = 0
+        noteHoldUntil = 0
         firstDropAt = dropped > 0 ? Date.now() : 0
+      }
+      const noteNotSaved = () => {
+        notes.tokens = Math.min(notes.capacity, notes.tokens + 1)
+        noteHoldUntil = before.hold
+        unsure = before.unsure
       }
       lastWriteAt = now
       inHand = rows.length
+      budget.writes -= 1
       const { status, sent, timedOut } = await airtable(
         env,
         env.AIRTABLE_WRITE_PAT,
@@ -887,7 +1177,7 @@ async function runFlush(env, deadline, budget) {
       if (flushOwner === me) inHand = 0
 
       if (status >= 200 && status < 300) {
-        if (withMarker) settleNote()
+        if (withMarker) noteSaved()
         continue
       }
       if (!sent || status === 429 || status === 502) {
@@ -895,7 +1185,7 @@ async function runFlush(env, deadline, budget) {
         // opened the silence), or the gateway error Airtable documents as
         // safe to retry. Keep everything for the next attempt.
         buffer.unshift(...rows)
-        if (withMarker) lastMarkerAt = markerBefore
+        if (withMarker) noteNotSaved()
         if (status !== 429) writeHoldUntil = Date.now() + RETRY_PAUSE_MS
         return
       }
@@ -903,28 +1193,33 @@ async function runFlush(env, deadline, budget) {
         // No answer (a dropped connection, or our time limit), or a server
         // error that can come after the rows were saved. Sending them again
         // could count every scan twice, so let them go and say so. A note
-        // that was in this call stays owed, and is not tried again for ten
-        // minutes: at worst one note too many, never the same note over and
-        // over while Airtable is slow, and never a note silently lost.
+        // that was in this call stays as the books already have it: owed,
+        // held for ten minutes, and flagged, so that the next note says how
+        // much of its count may repeat this one. Never the same note over
+        // and over while Airtable is slow, and never a note silently lost.
         lose(rows.length)
         writeHoldUntil = Date.now() + RETRY_PAUSE_MS
         if (timedOut) console.warn('qr scan log: Airtable did not answer in time')
         return
       }
-      // Airtable refused the request itself. Usually one row points at a code
-      // row that has since been deleted; send each alone so the others get in.
+      // Airtable refused the request itself, so nothing in it was saved.
+      // Usually one row points at a code row that has since been deleted;
+      // send each alone so the others get in.
       console.warn(`qr scan log: Airtable returned ${status}`)
       if (rows.length > 1) {
         for (const row of rows) row.solo = true
         buffer.unshift(...rows)
-        if (withMarker) lastMarkerAt = markerBefore
+        if (withMarker) noteNotSaved()
       } else if (rows.length === 1) {
-        if (withMarker) lastMarkerAt = markerBefore
+        if (withMarker) noteNotSaved()
         lose(1)
         await doubtCode(rows[0].code)
+      } else {
+        // The note alone was refused. It was not saved, so nothing can be
+        // repeated; but it stays held, so it is not tried again for ten
+        // minutes.
+        unsure = before.unsure
       }
-      // else: the note alone was refused. lastMarkerAt stays as set, so it is
-      // not tried again for ten minutes.
     }
   } catch (err) {
     console.warn('qr scan log failed', err && err.message)
