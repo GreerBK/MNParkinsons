@@ -89,7 +89,7 @@ const ACTIVITY_PATH_RE = /^\/api\/activity\/(rec[a-zA-Z0-9]{14,17})$/
 
 // Loose heuristic — good enough to separate "people browsing" from "scripts
 // and crawlers" at a glance. An empty user agent is treated as a bot too.
-const BOT_RE = /bot|crawl|spider|slurp|scrape|preview|fetch|monitor|probe|scan|headless|python|curl|wget|httpx|libwww|java\/|go-http/i
+export const BOT_RE = /bot|crawl|spider|slurp|scrape|preview|fetch|monitor|probe|scan|headless|python|curl|wget|httpx|libwww|java\/|go-http/i
 
 // All control characters (a decoded query could smuggle \r\n to fake extra
 // log lines in the cell, so unlike report.js this strips newlines/tabs too).
@@ -148,7 +148,7 @@ function logRequest(context, status, durationMs) {
   }
 }
 
-function clean(value, max) {
+export function clean(value, max) {
   return String(value).replace(CONTROL_CHARS_RE, '').slice(0, max)
 }
 
@@ -214,7 +214,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 // on the UTC day split anyone browsing across 7 pm into two codes. Built
 // from formatToParts so it does not depend on locale formatting; falls back
 // to the UTC date if the runtime ever lacks time-zone data.
-function centralDay(now = new Date()) {
+export function centralDay(now = new Date()) {
   try {
     const parts = new Intl.DateTimeFormat('en-US', {
       timeZone: 'America/Chicago',
@@ -238,7 +238,7 @@ function centralDay(now = new Date()) {
 // address can't be recovered), keyed with a server secret (outsiders can't
 // test guesses), and rotating daily (codes can't link a visitor across
 // days). The raw IP is read here and never stored anywhere.
-async function visitorHash(env, request) {
+export async function visitorHash(env, request) {
   try {
     const ip = request.headers.get('CF-Connecting-IP') || ''
     if (!ip) return ''

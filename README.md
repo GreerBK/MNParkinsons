@@ -112,9 +112,32 @@ Review workflow, all inside Airtable:
 
 The endpoint reuses the `AIRTABLE_WRITE_PAT` variable set up for reporting (above). Spam protection: a hidden honeypot field, strict length limits and allow-lists, and best-effort per-IP rate limiting at the edge.
 
+## Tracked QR codes
+
+Printed QR codes (flyers, posters, table tents) point at `https://mnparkinsons.org/q/<code>` instead of straight at the site. [`functions/q/[code].js`](functions/q/[code].js) records the scan and then redirects, so we can tell which piece of paper brought someone in, and can change where a code leads after it is printed.
+
+**Making a code** (nothing to set up, no deploy):
+
+1. Make up a short code for the place it will be printed, e.g. `udall-flyer`: lowercase letters, numbers and dashes, 40 characters at most. One code per source you want to tell apart; every copy of the same flyer shares one.
+2. Open `https://mnparkinsons.org/q/udall-flyer.png` and save the picture (a ~1000 px PNG). Swap `.png` for `.svg` for a vector that stays sharp at poster size.
+
+That is all. The first time a person scans the code, the site adds its row to the **QR Codes** table by itself, and counts from there. Afterwards you can give the row a friendlier `Name`, or set its `Destination` to any page of the site or another `https` address (blank means the home page; changes take effect within about five minutes, even after printing). You can also add the row by hand first if you want a destination from day one. Never change a row's `Code` once it is printed.
+
+Because any code works, a mistyped or made-up address scanned by a person becomes a row too. Those are safe to delete. Robots never create rows, and new rows are rationed to a few per minute.
+
+**Reading the results:**
+
+- Every scan is a row in the **QR Scans** table: time, the code, approximate city/region, a `Likely bot` flag and the anonymous `Visitor` code. Rows are kept permanently (they are few, and nothing prunes them).
+- The **QR Codes** table totals them per code: `Scans` (all time), `Scans (last 7 days)` and `Last scan`. Robots are left out; one person scanning twice counts twice.
+- The **Weekly QR scan report** automation emails that table every Monday morning. Recipients are the "To" line of its Send email step.
+- A scan lands on the site with `?src=<code>` in the address. That address is the `Referer` of the visit's API calls, and the scan's `Visitor` code matches the API Log's `Visitor` column for the same day, so the API Log shows what people who scanned a given code went on to search for and open.
+- The `Link` column also works as a plain tracked link in an email or a social post.
+
+A scan always reaches the site: a missing token or an Airtable outage still sends the visitor to the home page, just uncounted. Scan rows are written with `AIRTABLE_WRITE_PAT` (no extra setup in Production; Preview deployments without it redirect but do not count). The site reads and writes these two tables by field name, so renaming `Code`, `Destination` or any QR Scans field breaks tracking; adding fields is fine.
+
 ## Security & performance
 
-- **No user input ever reaches Airtable formulas.** The API functions fetch Active records with a fixed query and apply search/filters in plain JavaScript, so quotes or symbols in a search can't break or alter the query.
+- **No user input ever reaches Airtable formulas.** The API functions fetch Active records with a fixed query and apply search/filters in plain JavaScript, so quotes or symbols in a search can't break or alter the query. The one deliberate exception is the QR redirect, which looks a code up by formula only after the code has matched a strict letters-numbers-dashes pattern.
 - **Edge caching.** Responses are cached at Cloudflare's edge for ~5 minutes, so even heavy traffic stays far below Airtable's rate limits. New Airtable edits appear on the site within a few minutes.
 - **Security headers** (Content-Security-Policy, frame blocking, etc.) live in [`public/_headers`](public/_headers). The policy allows Cloudflare's Web Analytics beacon (`static.cloudflareinsights.com` for the script, `cloudflareinsights.com` for its report); without those two entries the browser blocks it and Web Analytics records nothing.
 - **Fonts are self-hosted** — no third-party requests, nothing shared with Google.
