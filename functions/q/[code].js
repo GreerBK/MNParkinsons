@@ -137,16 +137,12 @@ const YOUNG_SPREAD_MS = 3000
 // Airtable is asked anyway after this long.
 const EDGE_WAIT_MS = 300
 // A lookup that left for Airtable this long ago is probably stuck (a hung
-// call), and a scan that is waiting on it asks again, once. Long enough that
-// a base waking up (see above) is not mistaken for a stuck call: asking a
-// waking base again hurries nothing, and every lookup is paid for out of the
-// ration below.
+// call), and a scan that is waiting on it asks again; and again each time
+// the latest question has been out this long. Long enough that a base waking
+// up (see above) is not mistaken for a stuck call: asking a waking base again
+// hurries nothing, and every lookup is paid for out of the ration below.
 const HANDOVER_MS = 4000
 const LOOK_AGAIN_MS = 500 // how often a scan waiting on someone else's lookup checks whether to ask itself
-// A lookup counts as overtaken (lost) when Airtable has answered a call sent
-// after it and this much more time has passed: answers do not come back in
-// the order the calls went out, and a second is more than that ever differs.
-const OVERTAKEN_GRACE_MS = 1000
 // When Airtable could not say and the edge cache has still not answered, the
 // cache is the only one left that might know: it gets this much longer.
 const EDGE_LAST_WAIT_MS = 2000
@@ -246,7 +242,6 @@ let unsure = 0 // how many of `dropped` were in a note that may or may not have 
 let noteHoldUntil = 0 // no NOT RECORDED row is attempted before this
 let lastOkAt = 0 // when Airtable last answered any of our calls with success
 let lastBadAt = 0 // when a call of ours last got a 429, a server error or no answer
-let heard = { sent: 0, at: 0 } // of the calls Airtable has answered, the one sent latest: when it was sent, and when the answer came
 let ceilingUntil = 0 // the day's new-row ceiling was reached: do not ask about it again until then
 let flushOwner = 0 // serial number of the write run that currently has the buffer
 let flushBeatAt = 0 // when that run last said "still here"; 0 = no run
@@ -261,8 +256,7 @@ let nextCallAt = 0 // the next free turn through the Airtable gate
 
 const memo = new Map() // code → { entry, at }: entry is { id, destination } or null ("no such row")
 // code → the question now out for it: { at: when it was asked, sent: when it
-// leaves the gate for Airtable, tries: how many times running it has been
-// asked without an answer }
+// leaves the gate for Airtable }
 const lookups = new Map()
 const creating = new Map() // code → when a create for it started
 const ownClaims = new Map() // code → the time written on the "registering" mark this instance left
@@ -333,7 +327,14 @@ export async function onRequest(context) {
     if (person) {
       // A remembered row is good enough to redirect with. If the real answer
       // arrives and says the row is gone, there is nothing to count against.
-      const id = late ? late.then((real) => (real ? real.id : real === null ? '' : entry.id)) : entry.id
+      // The scan waits for that answer only while this request can still
+      // write the row afterwards; past that, the remembered row will do.
+      const patience = lastStart(deadline) - FLUSH_DELAY_MS - FLUSH_SPREAD_MS - 250 - Date.now()
+      const id = late
+        ? Promise.race([late, sleep(Math.max(0, patience))]).then((real) =>
+            real ? real.id : real === null ? '' : entry.id
+          )
+        : entry.id
       recordScan(context, code, id, deadline)
     }
     return redirect(destinationFor(entry.destination, url.origin, code))
@@ -514,9 +515,6 @@ async function airtable(env, token, path, init, deadline) {
       headers,
       signal: controller.signal,
     })
-    // Airtable answered (whatever it said). Lookups still waiting on a call
-    // that was sent before this one use that to tell they are lost.
-    if (turn > heard.sent) heard = { sent: turn, at: Date.now() }
     // The base is rate limited: stand down entirely. Every Airtable call in
     // this file comes through here, so none of them can retry into the storm.
     if (res.status === 429) {
@@ -700,6 +698,10 @@ async function lookupCode(context, code, person, deadline) {
   }
   if (found !== WAITING && found !== undefined) return { entry: found }
   const known = memo.get(code)
+  // An answer another request learned while we were asking is as good as our
+  // own, also when our own asking came back empty-handed (and also when that
+  // answer is "no such code": the scan must still get its row made).
+  if (found !== WAITING && known && known.at >= started) return { entry: known.entry }
   const remembered = known && known.entry ? known.entry : undefined
   return found === WAITING ? { entry: remembered, late: answer } : { entry: remembered }
 }
@@ -729,32 +731,24 @@ async function findOut(context, code, person, deadline) {
 // the base is rate limited. Requests that arrive while a question is out wait
 // for its answer instead of asking again: that is what keeps a room of people
 // scanning one code at the same moment from becoming a burst of Airtable
-// calls. A waiting scan asks again in two cases only, because every lookup
-// is paid for out of the ration other codes need:
-//   - once, when the question has been out for HANDOVER_MS (it may be stuck);
-//   - whenever Airtable has since answered a call that was sent after it:
-//     then Airtable is plainly working and this one question is lost.
-// A base that is slow to wake fits neither (it answers everything at the same
-// moment), so nobody asks it twice; and after a real outage the first answer
-// to anything sets every waiting code asking again at once.
+// calls. If the question looks stuck (out for HANDOVER_MS), one of them asks
+// again, and the rest wait on that one: so a code costs at most one lookup
+// every HANDOVER_MS however long Airtable stays silent, and a base that is
+// slow to wake is asked once, or twice if it takes longer than that.
 function askAirtable(context, code, person, deadline) {
   const now = Date.now()
   let flight = lookups.get(code)
   // Long dead: the request that asked was cut off. Start over.
   if (flight && now - flight.at >= LOOKUP_STALE_MS) flight = undefined
-  if (flight) {
-    const overtaken = heard.sent > flight.sent && now - heard.at >= OVERTAKEN_GRACE_MS
-    const stuck = now - flight.sent >= HANDOVER_MS
-    if (!overtaken && !(stuck && flight.tries < 2)) return followThenLook(context, code, person, deadline, flight)
-  }
-  // None out, or the one that is out is lost or looks stuck: ask if we may.
+  if (flight && now - flight.sent < HANDOVER_MS) return followThenLook(context, code, person, deadline, flight)
+  // None out, or the one that is out looks stuck: ask if we may.
   if (now < backoffUntil || !take(person ? personLookups : otherLookups, now)) {
     return flight ? followThenLook(context, code, person, deadline, flight) : Promise.resolve(undefined)
   }
   expire(lookups, LOOKUP_STALE_MS, now)
   // `sent` is when the call gets its turn at the gate: a question still
   // queueing there has not been out at all, and must not be taken for stuck.
-  const mine = { at: now, sent: Math.max(now, nextCallAt), tries: flight ? flight.tries + 1 : 1 }
+  const mine = { at: now, sent: Math.max(now, nextCallAt) }
   lookups.set(code, mine)
   return fetchCode(context.env, code, deadline).then((found) => {
     const entry = found ? { id: found.id, destination: found.destination } : found
@@ -768,8 +762,8 @@ function askAirtable(context, code, person, deadline) {
 }
 
 // Wait a moment on the question that is out for a code, then look at things
-// again: by then it may have been answered, given up, become stuck or been
-// overtaken (or, if we could not ask for want of a turn, a turn may have come).
+// again: by then it may have been answered, given up or become stuck (or, if
+// we could not ask for want of a turn, a turn may have come).
 function followThenLook(context, code, person, deadline, flight) {
   const until = Math.min(deadline, Date.now() + LOOK_AGAIN_MS)
   return follow(lookups, code, flight.at, until, false).then((found) =>
@@ -1185,6 +1179,9 @@ async function runFlush(env, deadline, budget) {
       // the gate allows.
       const fast = buffer.length >= BACKLOG_ROWS && Date.now() >= calmUntil
       const wait = lastWriteAt + (fast ? 0 : FLUSH_GAP_MS) - Date.now()
+      // If this request could not start a write once the pace is kept, it
+      // lets go now, so that a younger request can take the rows in time.
+      if (wait > 0 && Date.now() + wait + AIRTABLE_TIMEOUT_MS > deadline) return
       if (wait > 0) await sleep(wait)
       const now = Date.now()
       if (flushOwner !== me || !pendingWork(now)) return
