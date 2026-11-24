@@ -195,7 +195,8 @@ function buildFields(request, status, durationMs) {
     .map(([key, value]) => (value === '' ? key : `${key}=${value}`))
     .join(' & ')
 
-  const likelyBot = userAgent === '' || verifiedBot !== '' || BOT_RE.test(userAgent)
+  // CUBOT is a phone brand whose name happens to contain "bot".
+  const likelyBot = userAgent === '' || verifiedBot !== '' || BOT_RE.test(userAgent.replace(/cubot/gi, ''))
 
   const fields = {
     [F.summary]: `${request.method} ${path} · ${status}`,
@@ -329,6 +330,9 @@ async function flush(env, mayPurge = false) {
   const batch = buffer.splice(0, gap > 0 ? 9 : 10)
   if (gap > 0) batch.unshift(gapFields(gap))
   if (batch.length === 0) return
+  // If this batch is lost, what goes with it is its rows plus the count its
+  // gap marker was carrying (the marker itself is not a request).
+  const lostWithBatch = gap + batch.length - (gap > 0 ? 1 : 0)
   try {
     const res = await fetch(`https://api.airtable.com/v0/${env.AIRTABLE_BASE_ID}/${LOG_TABLE_ID}`, {
       method: 'POST',
@@ -345,13 +349,13 @@ async function flush(env, mayPurge = false) {
       // again after the storm (unless a flood has refilled the buffer).
       backoffUntil = Date.now() + BACKOFF_MS
       if (buffer.length + batch.length <= BUFFER_MAX) buffer.unshift(...batch)
-      else droppedCount += batch.length
+      else droppedCount += lostWithBatch
       return
     }
     if (!res.ok) {
       // Airtable rejected the batch (bad token, schema drift, …) — the rows
       // are gone; make sure the loss shows up in the next gap marker.
-      droppedCount += batch.length
+      droppedCount += lostWithBatch
       return
     }
     // Only prune when the base just proved healthy, so the purge's extra
@@ -360,7 +364,7 @@ async function flush(env, mayPurge = false) {
     // clear (paced by PURGE_MIN_GAP_MS), so a backlog cannot build up again.
     if (mayPurge && (purgeBacklog || Math.random() < PURGE_PROBABILITY)) await purgeOldRows(env)
   } catch {
-    droppedCount += batch.length // network failure — batch lost
+    droppedCount += lostWithBatch // network failure — batch lost
   }
 }
 

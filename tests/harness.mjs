@@ -52,6 +52,9 @@ export function load(relative) {
 export function setup(t, { latency = 100 } = {}) {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: START })
   t.mock.method(console, 'warn', () => {})
+  // The route spreads its return from a rate-limit silence over a random 0-10
+  // seconds, and the API log prunes on a coin flip. Tests need both fixed.
+  t.mock.method(Math, 'random', () => 0)
   const air = pretendAirtable(latency)
   const cache = pretendCache()
   const before = { fetch: globalThis.fetch, caches: globalThis.caches }
@@ -133,7 +136,14 @@ function pretendAirtable(latency) {
     lockedUntil: 0,
     recent: [],
   }
-  const newId = (letter) => `rec${letter}${String(++serial).padStart(13, '0')}`
+  // Like real record ids, these are unique but in no particular order.
+  const newId = (letter) => {
+    const n = ++serial
+    const scrambled = (Math.imul(n, 0x9e3779b1) >>> 0).toString(36).padStart(7, '0')
+    return `rec${letter}${scrambled}${String(n).padStart(6, '0')}`
+  }
+  // The real API reports createdTime to the whole second.
+  const createdTime = (ms) => new Date(Math.floor(ms / 1000) * 1000).toISOString()
   const reply = (status, body) => ({ status, body })
   const normal = (value) => String(value || '').trim().toLowerCase()
 
@@ -167,7 +177,7 @@ function pretendAirtable(latency) {
         .slice(0, max)
         .map((row) => ({
           id: row.id,
-          createdTime: new Date(row.created).toISOString(),
+          createdTime: createdTime(row.created),
           fields: Object.fromEntries(names.filter((name) => row.fields[name]).map((name) => [name, row.fields[name]])),
         }))
       return reply(200, { records })
@@ -179,7 +189,7 @@ function pretendAirtable(latency) {
       }
       const row = { id: newId('C'), created: now, fields: { ...fields } }
       air.codes.push(row)
-      return reply(200, { id: row.id, createdTime: new Date(now).toISOString(), fields: row.fields })
+      return reply(200, { id: row.id, createdTime: createdTime(now), fields: row.fields })
     }
     if (table === CODES && method === 'DELETE') {
       const ids = url.searchParams.getAll('records[]')
@@ -210,7 +220,7 @@ function pretendAirtable(latency) {
   }
 
   air.fetch = (input, init = {}) => {
-    const url = new URL(typeof input === 'string' ? input : input.url)
+    const url = new URL(input instanceof Request ? input.url : String(input))
     const call = {
       at: Date.now(),
       method: (init.method || 'GET').toUpperCase(),

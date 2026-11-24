@@ -22,12 +22,13 @@
 //   1. A scan must ALWAYS end up on the site, and quickly. The visitor waits
 //      at most LOOKUP_WAIT_MS for Airtable; after that they are sent to the
 //      last destination we knew for the code, or to the home page. Counting
-//      carries on in the background.
+//      carries on in the background where it can.
 //   2. This route must never spend the Airtable base's shared limits: 5
 //      requests a second (then a 30-second lockout for the whole site) and a
-//      cap on total records. So every Airtable call has a time limit, lookups
-//      are shared and rationed, one 429 silences this route for half a
-//      minute, and every kind of row it can write has a ceiling.
+//      cap on total records. So every Airtable call has a time limit and
+//      takes a turn through one gate, lookups are shared and rationed, one
+//      429 silences this route for half a minute, and every kind of row it
+//      can write has a brake.
 //   3. Nothing may get stuck. All shared state is a timestamp or a small
 //      counter that expires by itself, never an "in progress" flag: Cloudflare
 //      can cut a request's background work off at any await.
@@ -36,7 +37,8 @@
 // the same privacy line as the log: coarse Cloudflare geo and the anonymous
 // daily visitor code, never an IP address. Visits that are clearly not a
 // person opening the link (crawlers, link previews, scripts) are redirected
-// but not stored at all.
+// but not stored at all. A person's scan is either stored or, when it cannot
+// be, counted in a "NOT RECORDED" row, so a quiet table means a quiet code.
 
 import qrcode from 'qrcode-generator'
 import { centralDay, clean, onApiRequest, visitorHash } from '../api/_middleware.js'
@@ -45,9 +47,10 @@ import { centralDay, clean, onApiRequest, visitorHash } from '../api/_middleware
 // origin, whatever host the picture was opened on: a code saved from a
 // preview deployment must not point at the preview.
 const SITE_ORIGIN = 'https://mnparkinsons.org'
-// Other names the production site answers on. A Destination on any of them
-// is still "our site" (it gets the ?src= tag and the /q/ loop guard).
+// Every name the site answers on, previews included. A Destination on any of
+// them is still "our site": it gets the ?src= tag and the /q/ loop guard.
 const SITE_HOSTS = new Set(['mnparkinsons.org', 'www.mnparkinsons.org', 'mnparkinsons.pages.dev'])
+const isOurHost = (hostname) => SITE_HOSTS.has(hostname) || hostname.endsWith('.mnparkinsons.pages.dev')
 
 const CODES_TABLE_ID = 'tblgaqbbtNDczqxcs' // "QR Codes" table (not secret)
 const SCANS_TABLE_ID = 'tblicawiiqBb5et6g' // "QR Scans" table (not secret)
@@ -72,12 +75,18 @@ const S = {
 const CODE_RE = /^([a-z0-9][a-z0-9-]{0,39})(?:\.(png|svg))?$/
 
 // ── Time limits ────────────────────────────────────────────────────────────
-const LOOKUP_WAIT_MS = 2500 // the longest a visitor waits for Airtable before being sent on
+const LOOKUP_WAIT_MS = 2500 // the longest a visitor waits before being sent on
 const AIRTABLE_TIMEOUT_MS = 8000 // hard limit on any single Airtable call
 // Cloudflare gives background work 30 seconds after the response. Everything
 // a request starts is planned to finish inside this, measured from its start.
 const WINDOW_MS = 27000
-const BACKOFF_MS = 31000 // after a 429: Airtable's lockout is 30 seconds
+// After a 429 this route makes no Airtable call for 31 to 41 seconds
+// (Airtable's lockout is 30). The spread keeps several server instances that
+// were silenced together from all coming back in the same second, and for
+// two minutes after that rows go out at the gentle pace only.
+const BACKOFF_MS = 31000
+const BACKOFF_SPREAD_MS = 10000
+const CALM_MS = 120000
 // Every Airtable call this file makes, of any kind, takes a turn through one
 // gate, and turns are at least this far apart. So a server instance can never
 // send more than about three calls a second from here, whatever the mix of
@@ -92,32 +101,38 @@ const FRESH_MS = 300000 // a known row is trusted this long: a changed Destinati
 const UNKNOWN_MS = 60000 // "no such code" is trusted this long
 const STALE_SECONDS = 7 * 86400 // how long a known row can still be reused when Airtable cannot be asked
 const MEMO_MAX = 500
+// A lookup that has been out this long is probably stuck (a hung call, or a
+// visitor who hung up and took the request with them). The next scan of that
+// code asks again instead of waiting on it.
+const HANDOVER_MS = 1500
 
-// ── Rations (per server instance unless noted) ─────────────────────────────
-// A ration is a bucket of `capacity` tokens that regains one every
-// `refillMs`. Each kind of Airtable work draws from its own bucket.
+// ── Rations (each per server instance; a flood that reaches many instances
+// multiplies them, which is why these are brakes and not walls) ─────────────
+// A ration is a bucket of `capacity` tokens that regains one every `refillMs`.
 const ration = (capacity, refillMs) => ({ capacity, refillMs, tokens: capacity, at: 0 })
-// Lookups that are not already remembered. At most 3 at once and one more a
-// second, so made-up addresses can never use up the base's 5 requests/second.
-const personLookups = ration(3, 1000)
-const otherLookups = ration(1, 3000) // crawlers, previews and HEAD get a thinner share
-// Rows created for never-seen codes: a burst brake here, plus DAILY_CREATE_MAX
-// below, which is counted in Airtable and so holds across every instance.
+// Lookups of codes that are not remembered: up to 8 waiting for the gate at
+// once, then one every 3 seconds. Made-up addresses are the only thing that
+// needs many, and every lookup is an Airtable API call the workspace pays for.
+const personLookups = ration(8, 3000)
+const otherLookups = ration(1, 10000) // crawlers, previews and HEAD get a thinner share
+// Rows created for never-seen codes: a burst brake here, plus DAILY_CREATE_MAX,
+// which is counted in Airtable and so is shared by every instance.
 const createRation = ration(5, 12000)
-const DAILY_CREATE_MAX = 20 // new QR Codes rows per 24 hours before self-creation pauses
+const DAILY_CREATE_MAX = 20 // about this many new QR Codes rows per 24 hours before self-creation pauses
 const TWIN_CHECK_DELAY_MS = 1200
-// Scan rows. One "visitor" (network address + browser) may add 150 at once
-// and then one every 5 minutes: roomy enough for a hall of people on one
-// venue Wi-Fi, far too slow for a loop. And no instance writes more than 600
-// an hour, whoever is asking.
-const VISITOR_SCANS = [150, 300000]
-const VISITOR_KEYS_MAX = 2000
-const visitorScans = new Map() // "code|visitor" → ration
+const TWIN_CHECK_NEEDS_MS = 12000 // skip the twin check when the request is short of time
+// Scan rows. One network address may add 300 at once and then one every two
+// minutes: roomy enough for a hall of people on one venue Wi-Fi, far too slow
+// for a loop, and not something a change of browser name gets around. An
+// instance as a whole writes 600 at once and then 600 an hour.
+const ADDRESS_SCANS = [300, 120000]
+const ADDRESS_KEYS_MAX = 2000
+const addressScans = new Map() // address key → ration
 const instanceScans = ration(600, 6000)
 
 // ── Writing scans ──────────────────────────────────────────────────────────
 // Rows pool in memory and go out up to 10 per Airtable call (its batch
-// limit), never more than one call per FLUSH_GAP_MS from this instance.
+// limit), normally no more than one call per FLUSH_GAP_MS from this instance.
 const FLUSH_DELAY_MS = 1500 // let a burst pool into one call
 const FLUSH_GAP_MS = 1000
 // With this many rows waiting (a crowd, or the end of a lockout) the one-a-
@@ -129,54 +144,60 @@ const FLUSH_POLL_MS = 100
 // then be silent is a wait at the gate plus one call's time limit; silence
 // beyond that means its request was cut off, and another request takes over.
 const FLUSH_STALE_MS = MAX_QUEUE_MS + AIRTABLE_TIMEOUT_MS + 3000
-const RETRY_PAUSE_MS = 4000 // after a 5xx or network error
+// Cloudflare caps the calls one request may make (50 on the free plan), so
+// one request writes at most this many batches before leaving the rest to
+// the next.
+const WRITES_PER_REQUEST_MAX = 20
+const RETRY_PAUSE_MS = 4000 // after a write that could not be made or failed
 const KICK_GAP_MS = 3000
-const MARKER_GAP_MS = 600000 // at most one "NOT RECORDED" row per 10 minutes
+// "NOT RECORDED" rows: the first waits a little so it can cover a whole burst
+// rather than its first scan, and they are at least ten minutes apart.
+const MARKER_DELAY_MS = 15000
+const MARKER_GAP_MS = 600000
 const BUFFER_MAX = 200
 
 const buffer = [] // { fields, code, solo? }
-let dropped = 0 // scans not stored (limits, full buffer, failed writes) since the last marker row
-let lastMarkerAt = 0
+let dropped = 0 // people's scans not stored since the last NOT RECORDED row
+let firstDropAt = 0 // when the first of those happened
+let lastMarkerAt = 0 // when a NOT RECORDED row was last attempted
+let lastOkAt = 0 // when Airtable last answered any of our calls with success
 let flushOwner = 0 // serial number of the write run that currently has the buffer
 let flushBeatAt = 0 // when that run last said "still here"; 0 = no run
 let flushSerial = 0
+let inHand = 0 // rows the current write run has taken out of the buffer for the call it is making
 let lastWriteAt = 0
 let lastKickAt = 0
 let writeHoldUntil = 0 // pause after a failed write
 let backoffUntil = 0 // Airtable said 429: no calls of any kind from this route until then
+let calmUntil = 0 // after a 429: no fast backlog writing until then
 let nextCallAt = 0 // the next free turn through the Airtable gate
 
 const memo = new Map() // code → { entry, at }: entry is { id, destination } or null ("no such row")
-const lookups = new Map() // code → when a lookup for it started (still running)
-const creating = new Map() // code → when a create for it started (still running)
+const lookups = new Map() // code → when the latest lookup for it started
+const creating = new Map() // code → when a create for it started
+const forgotten = new Map() // code → when a refused scan last made us doubt what we remember
 // How long such a start-time is believed. Past it, the request that began the
 // work is taken to have been cut off, and the next one starts over.
 const LOOKUP_STALE_MS = MAX_QUEUE_MS + AIRTABLE_TIMEOUT_MS + 1000
-const CREATE_STALE_MS = 20000
+const CREATE_STALE_MS = 26000
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const WAITING = Symbol('waiting')
 
-function take(bucket, now) {
+function refill(bucket, now) {
   if (bucket.at === 0) bucket.at = now
   const gained = Math.floor((now - bucket.at) / bucket.refillMs)
   if (gained > 0) {
     bucket.tokens = Math.min(bucket.capacity, bucket.tokens + gained)
     bucket.at += gained * bucket.refillMs
   }
-  if (bucket.tokens < 1) return false
-  bucket.tokens -= 1
-  return true
+  return bucket.tokens >= 1
 }
 
-function takeFor(buckets, key, [capacity, refillMs], now) {
-  let bucket = buckets.get(key)
-  if (!bucket) {
-    if (buckets.size >= VISITOR_KEYS_MAX) buckets.delete(buckets.keys().next().value)
-    bucket = ration(capacity, refillMs)
-    buckets.set(key, bucket)
-  }
-  return take(bucket, now)
+function take(bucket, now) {
+  if (!refill(bucket, now)) return false
+  bucket.tokens -= 1
+  return true
 }
 
 function keepAlive(context, promise) {
@@ -197,14 +218,23 @@ export async function onRequest(context) {
   if (!match) return redirect(home)
   const [, code, imageType] = match
 
+  kickFlush(context, deadline) // rows an earlier request could not write get another chance
+
   if (imageType) return qrImage(context, `${SITE_ORIGIN}/q/${code}`, code, imageType)
 
-  kickFlush(context, deadline) // rows an earlier request could not write get another chance
+  // A browser loading the link ahead of the person (Chrome guessing what is
+  // being typed, a page's speculation rules) shows the copy it already has
+  // when they do open it, and never asks again: the scan would be invisible.
+  // Declining makes the browser drop the speculative copy and send an
+  // ordinary request on the real open.
+  if (/prefetch|prerender/i.test(request.headers.get('sec-purpose') || '')) {
+    return new Response(null, { status: 503, headers: { 'Cache-Control': 'no-store' } })
+  }
 
   const person = isPerson(request)
   const { entry, late } = await lookupCode(context, code, person, deadline)
-  // `late` is Airtable still answering after the visitor has been sent on.
-  // Let it finish, so the answer is at least remembered for the next scan.
+  // `late` is the answer still on its way after the visitor has been sent on.
+  // Let it finish, so it is at least remembered for the next scan.
   if (late) keepAlive(context, late)
 
   if (entry) {
@@ -238,22 +268,33 @@ export async function onRequest(context) {
 // loading a page. That takes more than not calling yourself a bot, because
 // chat apps fetch a pasted link to build its preview (WhatsApp and Signal do
 // it from the sender's own phone) and plenty of scripts send no bot name.
+// It is a good guess, not proof: anything that sends a browser's headers
+// passes, and a mail scanner that opens links in a real browser is one.
 
-// Every phone and desktop browser's user agent starts like this.
+// Every current phone and desktop browser's user agent starts like this. The
+// rare ones that do not (Opera Mini in its extreme data-saving mode, UC
+// Browser's speed mode, Internet Explorer in Compatibility View) are
+// redirected but not counted.
 const BROWSER_RE = /^Mozilla\/5\.0 \(/
 // Crawlers and tools that borrow that opening still name themselves. Unlike
 // the API log's list this one leaves out "scan": QR reader apps put it in
 // their browser's user agent, and they are exactly who we are counting.
 const ROBOT_RE =
   /\(compatible;|bot(?![a-z])|crawl|spider|slurp|scrape|preview|fetch|monitor|probe|headless|lighthouse|python|curl|wget|httpx|libwww|java\/|go-http/i
+// One exception to "looks like a browser". Desktop Word, Excel and PowerPoint
+// do not hand a clicked link to the browser: Office fetches it itself, follows
+// our redirect, and opens the browser on the page it ended up at. That fetch
+// is the only sign of the click.
+const OFFICE_CLICK_RE = /;\s?ms-office[;)]|^Microsoft Office\//i
 
 function isPerson(request) {
   if (request.method !== 'GET') return false // HEAD is a link checker
+  if (request.cf?.verifiedBotCategory) return false // Cloudflare-verified crawler
   const headers = request.headers
   const userAgent = headers.get('user-agent') || ''
+  if (OFFICE_CLICK_RE.test(userAgent)) return true
   // CUBOT is a phone brand, not a robot.
   if (!BROWSER_RE.test(userAgent) || ROBOT_RE.test(userAgent.replace(/cubot/gi, ''))) return false
-  if (request.cf?.verifiedBotCategory) return false // Cloudflare-verified crawler
   // A browser opening a page asks for HTML. Scripts and fetchers that fake a
   // browser name mostly ask for "anything" or nothing.
   if (!(headers.get('accept') || '').includes('text/html')) return false
@@ -261,9 +302,9 @@ function isPerson(request) {
   // navigation (an <img>, a fetch() call) is not someone opening the link.
   const mode = headers.get('sec-fetch-mode')
   if (mode && mode !== 'navigate') return false
-  // A browser guessing ahead of what the user typed has not opened it yet.
-  const purpose = `${headers.get('sec-purpose') || ''} ${headers.get('purpose') || ''} ${headers.get('x-moz') || ''}`
-  if (/prefetch|prerender/i.test(purpose)) return false
+  // Older ways a browser or app marks a page it is loading for a preview.
+  const purpose = `${headers.get('purpose') || ''} ${headers.get('x-purpose') || ''} ${headers.get('x-moz') || ''}`
+  if (/prefetch|prerender|preview/i.test(purpose)) return false
   return true
 }
 
@@ -278,35 +319,56 @@ function redirect(target) {
 // then rides along as the Referer on that visit's API calls, so the API Log
 // shows what visits that started from a given code went on to search for.
 //
-// The Destination cell is typed by hand and Airtable does not check it, so
-// anything that is not clearly a usable address falls back to the home page:
-// a scan must never land on a browser error.
+// The Destination cell is typed by hand and Airtable does not check it.
+// Anything that is plainly not a web address falls back to the home page. A
+// misspelled address that still looks like one (mnparkinsons.ogr) cannot be
+// told from a real one, which is why the README says to scan a code once
+// after changing its Destination.
 function destinationFor(raw, origin, code) {
   const home = new URL('/', origin)
   let target = home
   const text = String(raw || '').trim()
   if (text) {
     try {
-      // "mnparkinsons.org/#/submit" typed without a scheme is still a link.
-      const absolute = /^https?:\/\//i.test(text) || /^[/#?]/.test(text) ? text : `https://${text}`
-      const parsed = new URL(absolute, origin)
-      parsed.username = ''
-      parsed.password = ''
+      const hasScheme = /^https?:\/\//i.test(text)
+      const onThisSite = /^[/#?]/.test(text) && !/^[/\\]{2}/.test(text) // "/page", "#/submit", "?x=1"
+      const parsed = new URL(hasScheme || onThisSite ? text : `https://${text.replace(/^[/\\]+/, '')}`, origin)
+      const ours = parsed.origin === origin || isOurHost(parsed.hostname)
       // An old http:// link to our own site: same page, over https.
-      if (parsed.protocol === 'http:' && SITE_HOSTS.has(parsed.hostname)) parsed.protocol = 'https:'
-      // A real host name has a dot and a top-level domain. This is what stops
-      // "submit" or "activity/rec…" from becoming https://submit/.
-      const publicHost = /\.[a-z][a-z0-9-]*$/i.test(parsed.hostname)
-      if (parsed.origin === origin || (parsed.protocol === 'https:' && publicHost)) target = parsed
+      if (ours && parsed.protocol === 'http:' && parsed.origin !== origin) parsed.protocol = 'https:'
+      const usable =
+        !parsed.username &&
+        !parsed.password && // "name@example.org" is an email address, not a page
+        (parsed.origin === origin ||
+          (parsed.protocol === 'https:' &&
+            // Our own names need no scheme ("mnparkinsons.org/#/submit") but
+            // take no port. Any other site must be a full https:// address
+            // with a real-looking host name: a bare word, a file name or an
+            // address typed without https:// is more likely a slip than a
+            // destination.
+            (ours ? !parsed.port : hasScheme && looksLikeHost(parsed.hostname))))
+      if (usable) target = parsed
     } catch {
       target = home
     }
   }
-  if (target.origin === origin || (target.protocol === 'https:' && SITE_HOSTS.has(target.hostname))) {
+  if (target.origin === origin || (target.protocol === 'https:' && isOurHost(target.hostname))) {
     if (isQrPath(target.pathname)) target = home // never loop back here
     target.searchParams.set('src', code)
   }
   return target
+}
+
+// A host name that could exist: dotted, sound labels, a top-level domain that
+// starts with a letter.
+function looksLikeHost(hostname) {
+  if (hostname.length > 253) return false
+  const labels = hostname.split('.')
+  if (labels.length < 2) return false
+  if (!labels.every((label) => /^[a-z0-9-]{1,63}$/i.test(label) && !label.startsWith('-') && !label.endsWith('-'))) {
+    return false
+  }
+  return /^[a-z][a-z0-9-]+$/i.test(labels[labels.length - 1])
 }
 
 function isQrPath(pathname) {
@@ -316,18 +378,20 @@ function isQrPath(pathname) {
   } catch {
     // keep the raw path
   }
-  path = path.toLowerCase()
+  path = path.toLowerCase().replace(/[/\\]+/g, '/')
   return path === '/q' || path.startsWith('/q/')
 }
 
 // ── Talking to Airtable ────────────────────────────────────────────────────
 
 // One Airtable call: through the gate, with a hard time limit. Never rejects.
-// Resolves to { status, timedOut, body }. Status 0 means there is no answer:
-// with timedOut the call was sent and Airtable did not reply in time (so it
-// may or may not have taken effect); without it, nothing was sent at all.
+// Resolves to { status, sent, timedOut, body }.
+//   sent false   nothing went out (rate-limit silence, too busy, out of time)
+//   status 0     it went out and no answer came back: the connection failed
+//                or (timedOut) our time limit passed. Airtable may or may not
+//                have acted on it.
 async function airtable(env, token, path, init, deadline) {
-  const unsent = { status: 0, timedOut: false, body: null }
+  const unsent = { status: 0, sent: false, timedOut: false, body: null }
   const asked = Date.now()
   if (asked < backoffUntil) return unsent // the base is rate limited: this route stays silent
   const turn = Math.max(asked, nextCallAt)
@@ -351,16 +415,20 @@ async function airtable(env, token, path, init, deadline) {
     })
     // The base is rate limited: stand down entirely. Every Airtable call in
     // this file comes through here, so none of them can retry into the storm.
-    if (res.status === 429) backoffUntil = Date.now() + BACKOFF_MS
+    if (res.status === 429) {
+      backoffUntil = Date.now() + BACKOFF_MS + Math.floor(Math.random() * BACKOFF_SPREAD_MS)
+      calmUntil = backoffUntil + CALM_MS
+    }
+    if (res.ok) lastOkAt = Date.now()
     let body = null
     try {
       body = await res.json()
     } catch {
       body = null
     }
-    return { status: res.status, timedOut: false, body }
+    return { status: res.status, sent: true, timedOut: false, body }
   } catch {
-    return { status: 0, timedOut: controller.signal.aborted, body: null }
+    return { status: 0, sent: true, timedOut: controller.signal.aborted, body: null }
   } finally {
     clearTimeout(timer)
   }
@@ -369,9 +437,10 @@ async function airtable(env, token, path, init, deadline) {
 const normal = (value) => String(value || '').trim().toLowerCase()
 const codeFormula = (code) => `LOWER(TRIM({${CODE_FIELD}}))='${code}'`
 
-// Rows of QR Codes matching `formula`, oldest first. undefined when Airtable
-// could not be asked. "Oldest first" matters: if a code ever has two rows,
-// every instance settles on the same one.
+// Rows of QR Codes matching `formula`, in one fixed order: by creation time
+// (Airtable gives it to the second), then by record ID. undefined when
+// Airtable could not be asked. The order is what matters: if a code ever has
+// two rows, every lookup on every instance settles on the same one.
 async function listCodes(env, formula, max, deadline) {
   const query = new URLSearchParams({ filterByFormula: formula, maxRecords: String(max) })
   query.append('fields[]', CODE_FIELD)
@@ -403,6 +472,8 @@ async function fetchCode(env, code, deadline) {
 // carries the time it was learned. Fresh answers are used as they are; an old
 // answer about a known row is kept for days as a fallback, so a slow or
 // rate-limited Airtable costs a scan its count at worst, never its redirect.
+// (Best effort: memory goes when the instance does, and the edge cache is per
+// data centre and may be cleared early.)
 
 const cacheKeyFor = (code) => `https://qr-lookup.invalid/v2/${code}`
 const isFresh = (known, now) => now - known.at < (known.entry ? FRESH_MS : UNKNOWN_MS)
@@ -441,7 +512,17 @@ function rememberCode(context, code, entry) {
   }
 }
 
-async function forgetCode(code) {
+// A scan row for this code was refused. The usual reason is that the code's
+// row has been deleted and what we remember is out of date, so forget it and
+// let the next scan ask again. Once per FRESH_MS at most: if the refusal has
+// some other cause, asking Airtable on every scan would fix nothing.
+async function doubtCode(code) {
+  const now = Date.now()
+  const last = forgotten.get(code)
+  if (last && now - last < FRESH_MS) return
+  forgotten.delete(code)
+  forgotten.set(code, now)
+  if (forgotten.size > MEMO_MAX) forgotten.delete(forgotten.keys().next().value)
   memo.delete(code)
   try {
     await caches.default.delete(cacheKeyFor(code))
@@ -454,64 +535,73 @@ async function forgetCode(code) {
 //
 // Resolves to { entry, late }:
 //   entry  the row { id, destination } (possibly a remembered one), null when
-//          there is definitely no such row, or undefined when Airtable could
-//          not say within LOOKUP_WAIT_MS.
-//   late   present when Airtable is still being asked; resolves to the real
-//          answer (row, null, or undefined if it never came).
+//          there is definitely no such row, or undefined when nobody could
+//          say within LOOKUP_WAIT_MS.
+//   late   present when the answer is still on its way; resolves to it (row,
+//          null, or undefined if it never came).
 async function lookupCode(context, code, person, deadline) {
   const { env } = context
   if (!env.AIRTABLE_PAT || !env.AIRTABLE_BASE_ID) return { entry: undefined }
 
-  let known = memo.get(code)
-  if (!known || !isFresh(known, Date.now())) {
-    // Another instance in this data centre may have asked more recently.
-    const shared = await readEdge(code)
-    if (shared && (!known || shared.at > known.at)) {
-      known = shared
-      memoSet(code, known.entry, known.at)
-    }
-  }
-  if (known && isFresh(known, Date.now())) return { entry: known.entry }
-  const remembered = known && known.entry ? known.entry : undefined
+  const held = memo.get(code)
+  if (held && isFresh(held, Date.now())) return { entry: held.entry }
 
-  const answer = askAirtable(context, code, person, deadline)
+  // Everything slower than memory, the edge cache included, races the clock.
+  const answer = findOut(context, code, person, deadline)
   const first = await Promise.race([answer, sleep(LOOKUP_WAIT_MS).then(() => WAITING)])
-  if (first === WAITING) return { entry: remembered, late: answer }
-  return { entry: first === undefined ? remembered : first }
+  if (first !== WAITING && first !== undefined) return { entry: first }
+  const known = memo.get(code) // the edge cache may have filled this in meanwhile
+  const remembered = known && known.entry ? known.entry : undefined
+  return first === WAITING ? { entry: remembered, late: answer } : { entry: remembered }
+}
+
+async function findOut(context, code, person, deadline) {
+  // Another instance in this data centre may have asked more recently.
+  const shared = await readEdge(code)
+  const held = memo.get(code)
+  if (shared && (!held || shared.at > held.at)) memoSet(code, shared.entry, shared.at)
+  const known = memo.get(code)
+  if (known && isFresh(known, Date.now())) return known.entry
+  return askAirtable(context, code, person, deadline)
 }
 
 // Ask Airtable about a code: one question per code at a time, within the
 // lookup ration, and not at all while the base is rate limited. Requests that
-// arrive while a question is already out wait for its answer instead of
-// asking again: that is what keeps a room of people scanning one code at the
-// same moment from becoming a burst of Airtable calls.
+// arrive just after a question went out wait for its answer instead of asking
+// again: that is what keeps a room of people scanning one code at the same
+// moment from becoming a burst of Airtable calls.
 function askAirtable(context, code, person, deadline) {
   const now = Date.now()
   const flight = lookups.get(code)
-  if (flight && now - flight < LOOKUP_STALE_MS) {
-    return follow(lookups, code, flight, Math.min(deadline, flight + LOOKUP_STALE_MS), false)
+  const wait = () => follow(lookups, code, flight, Math.min(deadline, now + LOOKUP_STALE_MS), false)
+  if (flight && now - flight < HANDOVER_MS) return wait()
+  // None out, or the one that is out looks stuck: ask (again) if we may.
+  if (now < backoffUntil || !take(person ? personLookups : otherLookups, now)) {
+    return flight && now - flight < LOOKUP_STALE_MS ? wait() : Promise.resolve(undefined)
   }
-  if (now < backoffUntil || !take(person ? personLookups : otherLookups, now)) return Promise.resolve(undefined)
   expire(lookups, LOOKUP_STALE_MS, now)
   lookups.set(code, now)
   return fetchCode(context.env, code, deadline).then((found) => {
     if (found !== undefined) rememberCode(context, code, found)
     if (lookups.get(code) === now) lookups.delete(code)
-    return found
+    if (found !== undefined) return found
+    // Our own call failed; another request's may have got through meanwhile.
+    const known = memo.get(code)
+    return known && known.at >= now ? known.entry : undefined
   })
 }
 
-// Wait for another request's answer about `code` to show up in the memory
-// map. Deliberately not "await the other request's promise": each request
-// only ever waits on its own timers, so nothing here depends on how the
-// runtime treats promises shared between requests, and a request that is cut
-// off cannot leave others waiting on a promise that never settles.
+// Wait for an answer about `code`, learned at or after `since`, to show up in
+// the memory map. Deliberately not "await the other request's promise": each
+// request only ever waits on its own timers, so nothing here depends on how
+// the runtime treats promises shared between requests, and a request that is
+// cut off cannot leave others waiting on a promise that never settles.
 // Resolves to the entry; with needRow, only an actual row counts.
-async function follow(flights, code, flight, until, needRow) {
+async function follow(flights, code, since, until, needRow) {
   while (Date.now() < until) {
     const known = memo.get(code)
-    if (known && known.at >= flight && (known.entry || !needRow)) return known.entry
-    if (flights.get(code) !== flight) break // the other request finished without an answer
+    if (known && known.at >= since && (known.entry || !needRow)) return known.entry
+    if (!flights.has(code)) break // whoever was working on it finished without an answer
     await sleep(POLL_MS)
   }
   return needRow ? null : undefined
@@ -527,7 +617,7 @@ function expire(flights, maxAge, now) {
 // ── Creating a row for a new code ──────────────────────────────────────────
 
 // Resolves to the record ID to count the scan against, or '' when no row
-// could be made (rations, ceiling, Airtable trouble). Never rejects.
+// could be made (rations, the daily ceiling, Airtable trouble). Never rejects.
 async function createCode(context, code, deadline) {
   const { env } = context
   try {
@@ -559,7 +649,9 @@ async function createRow(context, code, deadline) {
   // code" may have been a remembered answer, and another instance may have
   // created it since.) And how many rows were added in the last 24 hours?
   // That count lives in Airtable, so it is one ceiling for every instance:
-  // the thing that keeps made-up addresses from filling the base.
+  // the thing that keeps made-up addresses from filling the base. It is a
+  // close count, not an exact one: instances that check at the same moment
+  // can each add a row.
   const recently = `DATETIME_DIFF(NOW(),CREATED_TIME(),'hours')<24`
   const seen = await listCodes(env, `OR(${codeFormula(code)},${recently})`, 100, deadline)
   if (!seen) return ''
@@ -589,15 +681,14 @@ async function createRow(context, code, deadline) {
 
   // Two instances can both get this far for the same brand-new code (a QR on
   // a slide, first scanned by a whole room). Give the other one a moment to
-  // land, then keep the oldest row and withdraw ours if it is the younger.
+  // land, then count against whichever row every lookup will settle on. The
+  // other row is left in place as a spare with no scans: deleting it could
+  // pull a row out from under an instance that is already using it.
   let winner = { id, destination: '' }
-  await sleep(TWIN_CHECK_DELAY_MS)
-  const rows = await listCodes(env, codeFormula(code), 5, deadline)
-  if (rows && rows.length > 1 && rows[0].id !== id && rows.some((row) => row.id === id)) {
-    winner = { id: rows[0].id, destination: rows[0].destination }
-    const gone = new URLSearchParams()
-    gone.append('records[]', id)
-    await airtable(env, env.AIRTABLE_WRITE_PAT, `${CODES_TABLE_ID}?${gone}`, { method: 'DELETE' }, deadline)
+  if (deadline - Date.now() > TWIN_CHECK_NEEDS_MS) {
+    await sleep(TWIN_CHECK_DELAY_MS)
+    const rows = await listCodes(env, codeFormula(code), 5, deadline)
+    if (rows && rows.length > 1) winner = { id: rows[0].id, destination: rows[0].destination }
   }
   rememberCode(context, code, winner)
   return winner.id
@@ -605,10 +696,41 @@ async function createRow(context, code, deadline) {
 
 // ── Recording a scan ───────────────────────────────────────────────────────
 
+// The address a request came from, scrambled, as a key for the scan ration.
+// It lives only in this instance's memory and is never stored or logged.
+function addressKey(request) {
+  const address = request.headers.get('CF-Connecting-IP') || ''
+  let hash = 0x811c9dc5
+  for (let i = 0; i < address.length; i++) hash = Math.imul(hash ^ address.charCodeAt(i), 0x01000193)
+  return (hash >>> 0).toString(36)
+}
+
+// May this scan be stored? Looks at every limit first and only then spends
+// from them, so a scan that is turned away costs nobody's allowance.
+function admit(address, now) {
+  let mine = addressScans.get(address)
+  if (!mine) {
+    if (addressScans.size >= ADDRESS_KEYS_MAX) addressScans.delete(addressScans.keys().next().value)
+    mine = ration(...ADDRESS_SCANS)
+    addressScans.set(address, mine)
+  }
+  if (buffer.length >= BUFFER_MAX || !refill(mine, now) || !refill(instanceScans, now)) return false
+  mine.tokens -= 1
+  instanceScans.tokens -= 1
+  return true
+}
+
+// A person's scan that will not be stored: remember it for the next
+// NOT RECORDED row.
+function lose(count) {
+  if (dropped === 0) firstDropAt = Date.now()
+  dropped += count
+}
+
 // Buffer the scan and schedule the write, without ever throwing: logging
 // must never get between a visitor and the page they scanned for.
 // `id` may be a promise (a row still being looked up or created); an empty
-// ID means there is no row to count against, and the scan is dropped.
+// ID means there is no row to count against.
 function recordScan(context, code, id, deadline) {
   try {
     const { env, request } = context
@@ -622,17 +744,14 @@ function recordScan(context, code, id, deadline) {
     if (cf.city) fields[S.city] = clean(cf.city, 100)
     if (cf.region) fields[S.region] = clean(cf.region, 100)
     if (cf.country) fields[S.country] = clean(cf.country, 100)
+    const address = addressKey(request)
 
     const task = Promise.all([visitorHash(env, request), id]).then(([hash, recordId]) => {
-      if (!recordId) return
-      const now = Date.now()
-      const allowed =
-        takeFor(visitorScans, `${code}|${hash}`, VISITOR_SCANS, now) && take(instanceScans, now) && buffer.length < BUFFER_MAX
-      if (!allowed) {
-        // Over a limit: not stored, but remembered, so a "NOT RECORDED" row
-        // can say roughly how many went missing. Even when shedding, make
-        // sure something is still working the buffer down.
-        dropped++
+      // No row to count against (Airtable could not be asked, or the code
+      // could not be registered), or over a limit: not stored, but counted,
+      // so a NOT RECORDED row can say roughly how many went missing.
+      if (!recordId || !admit(address, Date.now())) {
+        lose(1)
         kickFlush(context, deadline)
         return
       }
@@ -647,19 +766,31 @@ function recordScan(context, code, id, deadline) {
   }
 }
 
-const pendingWork = (now) => buffer.length > 0 || (dropped > 0 && now - lastMarkerAt >= MARKER_GAP_MS)
+// A NOT RECORDED row is due once the first loss is a little old, the last
+// attempt is ten minutes old, and Airtable has answered something since the
+// losses began: a note sent into an outage would only be lost with the rest.
+// (After ten minutes without any answer it is tried anyway.)
+const markerDue = (now) =>
+  dropped > 0 &&
+  now - firstDropAt >= MARKER_DELAY_MS &&
+  now - lastMarkerAt >= MARKER_GAP_MS &&
+  (lastOkAt >= firstDropAt || now - firstDropAt >= MARKER_GAP_MS)
+const pendingWork = (now) => buffer.length > 0 || markerDue(now)
 
 // Start a flusher if there is unwritten work and nobody has done so in the
 // last few seconds. Called on every scan, and by the API middleware on every
-// API request (see the registration at the bottom of this section), so rows
-// that one request could not write are picked up by the next visitor's
-// ordinary browsing instead of waiting for another scan.
+// API request (see the registration below), so rows that one request could
+// not write are picked up by the next visitor's ordinary browsing instead of
+// waiting for another scan.
 function kickFlush(context, deadline) {
   try {
     const { env } = context
     if (!env.AIRTABLE_WRITE_PAT || !env.AIRTABLE_BASE_ID) return
     const now = Date.now()
     if (!pendingWork(now) || now - lastKickAt < KICK_GAP_MS) return
+    // A request that cannot outlast the current pause would only use up the
+    // kick: leave it for one that can.
+    if (Math.max(backoffUntil, writeHoldUntil) + AIRTABLE_TIMEOUT_MS > deadline) return
     lastKickAt = now
     keepAlive(context, flushSoon(env, deadline).catch(() => {}))
   } catch {
@@ -674,11 +805,12 @@ onApiRequest((context) => kickFlush(context, Date.now() + WINDOW_MS))
 // already writing is how rows used to be left behind with nobody to write
 // them.) Only one request writes at a time; the others watch.
 async function flushSoon(env, deadline) {
+  const budget = { writes: WRITES_PER_REQUEST_MAX }
   await sleep(FLUSH_DELAY_MS)
   for (;;) {
     const now = Date.now()
     // A write is only started if its full time limit still fits.
-    if (!pendingWork(now) || now + AIRTABLE_TIMEOUT_MS > deadline) return
+    if (!pendingWork(now) || now + AIRTABLE_TIMEOUT_MS > deadline || budget.writes <= 0) return
     const hold = Math.max(backoffUntil, writeHoldUntil)
     if (now < hold) {
       if (hold + AIRTABLE_TIMEOUT_MS > deadline) return // cannot outwait it: a later request will write these
@@ -686,17 +818,18 @@ async function flushSoon(env, deadline) {
     } else if (now - flushBeatAt < FLUSH_STALE_MS) {
       await sleep(FLUSH_POLL_MS) // another request is writing
     } else {
-      await runFlush(env, deadline)
+      await runFlush(env, deadline, budget)
     }
   }
 }
 
 // A stand-in row for scans that were not stored, so a quiet table never
-// means "nobody scanned" when it was really "limits or errors".
-function markerFields(count) {
+// means "nobody scanned" when it was really "limits or errors". It carries
+// the time the first of them happened and is linked to no code.
+function markerFields(count, since) {
   return {
     [S.summary]: `NOT RECORDED · about ${count} scan${count === 1 ? '' : 's'}`,
-    [S.time]: new Date().toISOString(),
+    [S.time]: new Date(since).toISOString(),
   }
 }
 
@@ -708,13 +841,18 @@ function takeBatch(max) {
   return buffer.splice(0, n)
 }
 
-async function runFlush(env, deadline) {
+async function runFlush(env, deadline, budget) {
   const me = ++flushSerial
   flushOwner = me
   flushBeatAt = Date.now() // a time, not a flag: if this request is cut off mid-write, the claim simply expires
+  // The run before this one was cut off with rows in its hands. Nobody can
+  // know whether Airtable got them, so they go the way of a timed-out write.
+  if (inHand > 0) lose(inHand)
+  inHand = 0
   try {
-    for (;;) {
-      const wait = lastWriteAt + (buffer.length >= BACKLOG_ROWS ? 0 : FLUSH_GAP_MS) - Date.now()
+    for (; budget.writes > 0; budget.writes--) {
+      const fast = buffer.length >= BACKLOG_ROWS && Date.now() >= calmUntil
+      const wait = lastWriteAt + (fast ? 0 : FLUSH_GAP_MS) - Date.now()
       if (wait > 0) await sleep(wait)
       const now = Date.now()
       if (flushOwner !== me || !pendingWork(now)) return
@@ -722,56 +860,71 @@ async function runFlush(env, deadline) {
       flushBeatAt = now // still here
 
       const alone = buffer.length > 0 && buffer[0].solo
-      const withMarker = !alone && dropped > 0 && now - lastMarkerAt >= MARKER_GAP_MS
-      const lost = withMarker ? dropped : 0
+      const withMarker = !alone && markerDue(now)
       const rows = alone ? buffer.splice(0, 1) : takeBatch(withMarker ? 9 : 10)
       const records = rows.map((row) => ({ fields: row.fields }))
+      // The note is counted as written only once Airtable says so: until then
+      // the scans it covers stay owed, so being cut off here cannot lose them.
+      const noted = withMarker ? dropped : 0
+      const markerBefore = lastMarkerAt
       if (withMarker) {
-        records.unshift({ fields: markerFields(lost) })
-        dropped -= lost
+        records.unshift({ fields: markerFields(noted, firstDropAt) })
+        lastMarkerAt = now
+      }
+      const settleNote = () => {
+        dropped -= noted
+        firstDropAt = dropped > 0 ? Date.now() : 0
       }
       lastWriteAt = now
-      const { status, timedOut } = await airtable(
+      inHand = rows.length
+      const { status, sent, timedOut } = await airtable(
         env,
         env.AIRTABLE_WRITE_PAT,
         SCANS_TABLE_ID,
         { method: 'POST', body: JSON.stringify({ records }) },
         deadline
       )
+      if (flushOwner === me) inHand = 0
 
       if (status >= 200 && status < 300) {
-        if (withMarker) lastMarkerAt = Date.now()
+        if (withMarker) settleNote()
         continue
       }
-      if (withMarker) dropped += lost // the marker was not written either
-      if (status === 429) {
-        buffer.unshift(...rows) // not saved: keep them for after the lockout (airtable() opened the backoff)
-        return
-      }
-      if (status === 0 && timedOut) {
-        // No answer in time. The rows may or may not have been saved, and
-        // sending them again could count every scan twice: let them go.
-        dropped += rows.length
-        writeHoldUntil = Date.now() + RETRY_PAUSE_MS
+      if (!sent || status === 429 || status === 502) {
+        // Certainly not saved: never sent, rate limited (airtable() has
+        // opened the silence), or the gateway error Airtable documents as
+        // safe to retry. Keep everything for the next attempt.
+        buffer.unshift(...rows)
+        if (withMarker) lastMarkerAt = markerBefore
+        if (status !== 429) writeHoldUntil = Date.now() + RETRY_PAUSE_MS
         return
       }
       if (status === 0 || status >= 500) {
-        buffer.unshift(...rows) // Airtable hiccup: try again shortly
+        // No answer (a dropped connection, or our time limit), or a server
+        // error that can come after the rows were saved. Sending them again
+        // could count every scan twice, so let them go and say so. A note
+        // that was in this call stays owed, and is not tried again for ten
+        // minutes: at worst one note too many, never the same note over and
+        // over while Airtable is slow, and never a note silently lost.
+        lose(rows.length)
         writeHoldUntil = Date.now() + RETRY_PAUSE_MS
+        if (timedOut) console.warn('qr scan log: Airtable did not answer in time')
         return
       }
-      // Airtable refused the rows themselves. Usually one row points at a code
+      // Airtable refused the request itself. Usually one row points at a code
       // row that has since been deleted; send each alone so the others get in.
       console.warn(`qr scan log: Airtable returned ${status}`)
       if (rows.length > 1) {
         for (const row of rows) row.solo = true
         buffer.unshift(...rows)
+        if (withMarker) lastMarkerAt = markerBefore
       } else if (rows.length === 1) {
-        dropped += 1
-        await forgetCode(rows[0].code) // whatever we remembered about its code is wrong
-      } else {
-        lastMarkerAt = Date.now() // even the marker was refused: do not keep trying
+        if (withMarker) lastMarkerAt = markerBefore
+        lose(1)
+        await doubtCode(rows[0].code)
       }
+      // else: the note alone was refused. lastMarkerAt stays as set, so it is
+      // not tried again for ten minutes.
     }
   } catch (err) {
     console.warn('qr scan log failed', err && err.message)
@@ -789,10 +942,13 @@ const IMAGE_TTL_SECONDS = 86400
 
 async function qrImage(context, text, code, type) {
   const { request } = context
+  // The picture is the same whatever host or query string asked for it, so
+  // one cached copy serves them all.
+  const cacheKey = `https://qr-picture.invalid/v2/${code}.${type}`
   let cache = null
   try {
     cache = caches.default
-    const hit = await cache.match(request)
+    const hit = await cache.match(cacheKey)
     if (hit) return hit
   } catch {
     cache = null
@@ -817,7 +973,7 @@ async function qrImage(context, text, code, type) {
     },
   })
   if (cache && request.method === 'GET') {
-    const put = cache.put(request, response.clone()).catch(() => {})
+    const put = cache.put(cacheKey, response.clone()).catch(() => {})
     keepAlive(context, put)
   }
   return response
