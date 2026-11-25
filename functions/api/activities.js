@@ -75,7 +75,7 @@ async function fetchActiveRecords(env, waitUntil) {
     if (!res.ok) throw new Error(`Airtable upstream error: ${res.status}`)
 
     const data = await res.json()
-    allRecords = allRecords.concat(data.records)
+    allRecords = allRecords.concat(data.records.map(publicRecord))
     offset = data.offset
   } while (offset)
 
@@ -92,6 +92,20 @@ async function fetchActiveRecords(env, waitUntil) {
   }
 
   return allRecords
+}
+
+// Activities fields that exist for Airtable-side bookkeeping only and must
+// not reach the browser: the links to traffic-log rows (one record ID per
+// logged page view, so the array grows with the log's retention), the links
+// to visitor reports, and the per-activity view counts. The site never reads
+// them. The same rule lives in functions/api/activity/[id].js — keep the two in step.
+const INTERNAL_FIELDS = ['API Log', 'Reports']
+function publicRecord(record) {
+  const fields = { ...(record.fields || {}) }
+  for (const name of Object.keys(fields)) {
+    if (INTERNAL_FIELDS.includes(name) || name.startsWith('Views (')) delete fields[name]
+  }
+  return { ...record, fields }
 }
 
 export async function onRequestGet(context) {
