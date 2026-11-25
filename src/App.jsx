@@ -1001,6 +1001,11 @@ function Nav() {
   const onHome = path === '/' || path === ''
   const onSearch = path === '/search'
   const onSubmit = path === '/submit'
+  // Each CTA carries a full and a short label; CSS shows one or the other (the
+  // short ones, "Submit" and "Search", keep the sticky nav to a single row on
+  // phones, see the max-width: 640px block in index.css). Whichever span is
+  // display:none is also left out of the accessible name, so the visible text
+  // and the spoken name always match (WCAG 2.5.3 Label in Name).
   return (
     <nav aria-label="Main site navigation">
       <div className="nav-inner">
@@ -1010,7 +1015,7 @@ function Nav() {
           aria-label="MN Parkinson's Connect home"
           aria-current={onHome ? 'page' : undefined}
         >
-          MN <span>Parkinson's Connect</span>
+          MN <span>Parkinson's <br className="nav-logo-break" />Connect</span>
         </a>
         <div className="nav-links">
           <a
@@ -1018,14 +1023,16 @@ function Nav() {
             className="btn btn-outline nav-cta"
             aria-current={onSubmit ? 'page' : undefined}
           >
-            Submit an activity
+            <span className="nav-cta-label-full">Submit an activity</span>
+            <span className="nav-cta-label-short">Submit</span>
           </a>
           <a
             href="#/search"
             className="btn btn-outline nav-cta"
             aria-current={onSearch ? 'page' : undefined}
           >
-            Find activities near you
+            <span className="nav-cta-label-full">Find activities near you</span>
+            <span className="nav-cta-label-short">Search</span>
           </a>
         </div>
       </div>
