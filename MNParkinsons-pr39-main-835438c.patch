@@ -1,0 +1,530 @@
+diff --git a/.gitignore b/.gitignore
+index 31ce01253b7117c05fddc64d40dca7197d754389..e12ec2f741fe0b016b425a58ef70d9c5aec1f153 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -3,3 +3,5 @@ node_modules
+ dist
+ .dev.vars
+ .wrangler
++/playwright-report/
++/test-results/
+diff --git a/README.md b/README.md
+index 93c32a6f1c6a175abcfa87af00a0fd562295edbe..ef3b7ba5b3c2ef583c6663ce3131dc305caad780 100644
+--- a/README.md
++++ b/README.md
+@@ -151,3 +151,15 @@ npx wrangler pages dev dist
+ ```
+ 
+ Create a `.dev.vars` file (git-ignored) with `AIRTABLE_PAT`, `AIRTABLE_BASE_ID`, and `AIRTABLE_TABLE_ID` so the local API functions can reach Airtable. In production these are set as environment variables in the Cloudflare Pages dashboard.
++
++### Responsive navigation tests
++
++Run the Playwright suite with Node.js 20 or later:
++
++```sh
++npm ci
++npx playwright install chromium firefox webkit
++npm run test:nav
++```
++
++On Linux, use `npx playwright install --with-deps` to install any missing browser system dependencies. To run one engine, use `npm run test:nav -- --project=chromium` (or `firefox` or `webkit`). The suite builds and serves the site locally on port 4173 and uses fixture data for the Airtable-backed requests.
+diff --git a/package-lock.json b/package-lock.json
+index 93d0de5abcf567a0e1b529fd749029a933ad8442..e7ee639e1e987d31e4c44b7f2a2f2813cfc97921 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -15,6 +15,7 @@
+         "react-dom": "^18.2.0"
+       },
+       "devDependencies": {
++        "@playwright/test": "1.65.1",
+         "@vitejs/plugin-react": "^4.2.1",
+         "vite": "^6.4.3"
+       }
+@@ -50,7 +51,6 @@
+       "integrity": "sha512-CGOfOJqWjg2qW/Mb6zNsDm+u5vFQ8DxXfbM09z69p5Z6+mE1ikP2jUXw+j42Pf1XTYED2Rni5f95npYeuwMDQA==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "@babel/code-frame": "^7.29.0",
+         "@babel/generator": "^7.29.0",
+@@ -812,6 +812,22 @@
+         "@jridgewell/sourcemap-codec": "^1.4.14"
+       }
+     },
++    "node_modules/@playwright/test": {
++      "version": "1.65.1",
++      "resolved": "https://registry.npmjs.org/@playwright/test/-/test-1.65.1.tgz",
++      "integrity": "sha512-y+NCIRm2LvY4slUVWvGh1nujJ8RF/hEisIsq2mtUPgdQC4L701bq5hZGMhrpeXjACvwvO9tj5dJqhvM6TP9lbw==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "dependencies": {
++        "playwright": "1.65.1"
++      },
++      "bin": {
++        "playwright": "cli.js"
++      },
++      "engines": {
++        "node": ">=20"
++      }
++    },
+     "node_modules/@rolldown/pluginutils": {
+       "version": "1.0.0-beta.27",
+       "resolved": "https://registry.npmjs.org/@rolldown/pluginutils/-/pluginutils-1.0.0-beta.27.tgz",
+@@ -1275,7 +1291,6 @@
+         }
+       ],
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "baseline-browser-mapping": "^2.9.0",
+         "caniuse-lite": "^1.0.30001759",
+@@ -1538,7 +1553,6 @@
+       "integrity": "sha512-QP88BAKvMam/3NxH6vj2o21R6MjxZUAd6nlwAS/pnGvN9IVLocLHxGYIzFhg6fUQ+5th6P4dv4eW9jX3DSIj7A==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "engines": {
+         "node": ">=12"
+       },
+@@ -1546,6 +1560,35 @@
+         "url": "https://github.com/sponsors/jonschlinkert"
+       }
+     },
++    "node_modules/playwright": {
++      "version": "1.65.1",
++      "resolved": "https://registry.npmjs.org/playwright/-/playwright-1.65.1.tgz",
++      "integrity": "sha512-vJ1FuoOrNwOKHUIVEvSt3jT1L+wjjDpwhwIstKtfvTh8XIG4FG4bIFuvNdMxi81LGfAhUgUZleVFaOLY4RIUUw==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "dependencies": {
++        "playwright-core": "1.65.1"
++      },
++      "bin": {
++        "playwright": "cli.js"
++      },
++      "engines": {
++        "node": ">=20"
++      }
++    },
++    "node_modules/playwright-core": {
++      "version": "1.65.1",
++      "resolved": "https://registry.npmjs.org/playwright-core/-/playwright-core-1.65.1.tgz",
++      "integrity": "sha512-hqPpz7blSMPxWVdoeE1yiBSzXsKiVOd2k+kjCvmUywD2GPO2Dd9HfcWnq9NN0GHbNZDFgZ9JfBFr+X5/BLo0qw==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "bin": {
++        "playwright-core": "cli.js"
++      },
++      "engines": {
++        "node": ">=20"
++      }
++    },
+     "node_modules/postcss": {
+       "version": "8.5.15",
+       "resolved": "https://registry.npmjs.org/postcss/-/postcss-8.5.15.tgz",
+@@ -1586,7 +1629,6 @@
+       "resolved": "https://registry.npmjs.org/react/-/react-18.3.1.tgz",
+       "integrity": "sha512-wS+hAgJShR0KhEvPJArfuPVN1+Hz1t0Y6n5jLrGQbkb4urgPE/0Rve+1kMB1v/oWgHgm4WIcV+i7F2pTVj+2iQ==",
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "loose-envify": "^1.1.0"
+       },
+@@ -1745,7 +1787,6 @@
+       "integrity": "sha512-NTKlcQjlAK7MlQoyb6LgaqHc8sso/pVyUJYWMws3jg21uTJw/LddqIFPcPqP6PzpgbIcZyKI85sFE4HBrQDA8A==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "esbuild": "^0.25.0",
+         "fdir": "^6.4.4",
+diff --git a/package.json b/package.json
+index 6e23e7b199ce88073243918a392bc2e2d5bc0430..42ad59a200db09c2213cdecbd7f2404b6bc87c60 100644
+--- a/package.json
++++ b/package.json
+@@ -6,7 +6,8 @@
+   "scripts": {
+     "dev": "vite",
+     "build": "vite build",
+-    "preview": "vite preview"
++    "preview": "vite preview",
++    "test:nav": "playwright test"
+   },
+   "dependencies": {
+     "@fontsource/dm-sans": "^5.2.8",
+@@ -16,6 +17,7 @@
+     "react-dom": "^18.2.0"
+   },
+   "devDependencies": {
++    "@playwright/test": "1.65.1",
+     "@vitejs/plugin-react": "^4.2.1",
+     "vite": "^6.4.3"
+   }
+diff --git a/playwright.config.js b/playwright.config.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..2b529a7ccb3d31b72a4586ca870555cac83c0b64
+--- /dev/null
++++ b/playwright.config.js
+@@ -0,0 +1,18 @@
++import { defineConfig } from '@playwright/test'
++
++const port = 4173
++const baseURL = `http://127.0.0.1:${port}`
++
++export default defineConfig({
++  testDir: './tests',
++  use: { baseURL },
++  projects: [
++    { name: 'chromium', use: { browserName: 'chromium' } },
++    { name: 'firefox', use: { browserName: 'firefox' } },
++    { name: 'webkit', use: { browserName: 'webkit' } },
++  ],
++  webServer: {
++    command: `npm run build && npm run preview -- --host 127.0.0.1 --port ${port} --strictPort`,
++    url: baseURL,
++  },
++})
+diff --git a/src/App.jsx b/src/App.jsx
+index b6a7b04b68a5e2bf09633b24a80da1c2010fd21f..730ae4c4daea868741e3557c0239f639197c967d 100644
+--- a/src/App.jsx
++++ b/src/App.jsx
+@@ -1001,6 +1001,7 @@ function Nav() {
+   const onHome = path === '/' || path === ''
+   const onSearch = path === '/search'
+   const onSubmit = path === '/submit'
++  // CSS hides the unused CTA labels so accessible names match the visible text.
+   return (
+     <nav aria-label="Main site navigation">
+       <div className="nav-inner">
+@@ -1010,7 +1011,12 @@ function Nav() {
+           aria-label="MN Parkinson's Connect home"
+           aria-current={onHome ? 'page' : undefined}
+         >
+-          MN <span>Parkinson's Connect</span>
++          <span>
++            MN{' '}
++            <span className="nav-logo-name">
++              Parkinson's{' '}<br className="nav-logo-break" />Connect
++            </span>
++          </span>
+         </a>
+         <div className="nav-links">
+           <a
+@@ -1018,14 +1024,16 @@ function Nav() {
+             className="btn btn-outline nav-cta"
+             aria-current={onSubmit ? 'page' : undefined}
+           >
+-            Submit an activity
++            <span className="nav-cta-label-full">Submit an activity</span>
++            <span className="nav-cta-label-short">Submit</span>
+           </a>
+           <a
+             href="#/search"
+             className="btn btn-outline nav-cta"
+             aria-current={onSearch ? 'page' : undefined}
+           >
+-            Find activities near you
++            <span className="nav-cta-label-full">Find activities near you</span>
++            <span className="nav-cta-label-short">Search</span>
+           </a>
+         </div>
+       </div>
+diff --git a/src/index.css b/src/index.css
+index 73bb5f512e2bcb6638f843d0986da58ddd7abeb7..ba3a1aa1fd64b305c776bc65489cf30344e2d982 100644
+--- a/src/index.css
++++ b/src/index.css
+@@ -126,7 +126,7 @@ nav {
+   font-size: 1.2rem;
+   color: var(--primary);
+ }
+-.nav-logo span { color: var(--text); }
++.nav-logo-name { color: var(--text); }
+ 
+ /* Buttons */
+ .btn {
+@@ -146,6 +146,11 @@ nav {
+ .btn-outline { border: 1px solid var(--border); color: var(--text); background: var(--white); box-shadow: var(--shadow-sm); }
+ .btn-outline:hover { border-color: var(--primary-mid); color: var(--primary); box-shadow: var(--shadow-md); transform: translateY(-1px); }
+ 
++.nav-logo,
++.nav-cta {
++  min-width: 44px;
++}
++
+ /* Nav anchor styled as a button (semantic <a> for navigation) */
+ .nav-cta {
+   display: inline-flex;
+@@ -193,6 +198,43 @@ nav {
+   flex-wrap: wrap;
+ }
+ 
++.nav-logo-break,
++.nav-cta-label-short {
++  display: none;
++}
++
++/* Keep one compact row when the wordmark and short labels fit. Enlarged text
++   can reflow the wordmark and move the two CTAs together onto a second row. */
++@media (max-width: 640px) {
++  .nav-inner {
++    flex-wrap: wrap;
++    padding: 0.5rem 12px;
++    gap: 8px;
++  }
++  .nav-logo {
++    flex: 1 1 min-content;
++    font-size: 1rem;
++    line-height: 1.1;
++  }
++  .nav-logo-break {
++    display: inline;
++  }
++  .nav-links {
++    flex-wrap: nowrap;
++    gap: 8px;
++    margin-inline-start: auto;
++  }
++  .nav-cta {
++    padding: 0.6rem 12px;
++  }
++  .nav-cta-label-full {
++    display: none;
++  }
++  .nav-cta-label-short {
++    display: inline;
++  }
++}
++
+ /* Home hero */
+ .hero {
+   position: relative;
+diff --git a/tests/responsive-nav.spec.js b/tests/responsive-nav.spec.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..06155e1aa1fd03e989c03ae00c4172c99787dff2
+--- /dev/null
++++ b/tests/responsive-nav.spec.js
+@@ -0,0 +1,223 @@
++import { expect, test } from '@playwright/test'
++
++const widths = [320, 360, 375, 430, 480, 600, 640, 641, 768, 1024, 1280]
++const interactionWidths = [320, 640, 641, 1280]
++const height = 740
++const textScales = [100, 125, 150, 200]
++const navigationName = 'Main site navigation'
++const homeName = "MN Parkinson's Connect home"
++
++// Enough category tiles to reach the requested scroll offset on desktop.
++const activityTypes = Array.from({ length: 36 }, (_, index) => `Activity type ${index + 1}`)
++
++test.beforeEach(async ({ page }) => {
++  await page.addInitScript(() => localStorage.setItem('mnpc_disclaimer_accepted', 'true'))
++  await page.route('**/api/activities?*', route => route.fulfill({
++    json: {
++      records: [{
++        id: 'recNavigationFixture',
++        fields: { 'Activity Name': 'Sample activity', 'Activity Type': activityTypes },
++      }],
++    },
++  }))
++  await page.route('**/api/filter-options', route => route.fulfill({ json: { activityType: activityTypes } }))
++})
++
++function navLinks(page, width) {
++  const nav = page.getByRole('navigation', { name: navigationName })
++  const submitName = width <= 640 ? 'Submit' : 'Submit an activity'
++  const searchName = width <= 640 ? 'Search' : 'Find activities near you'
++  return {
++    nav,
++    home: nav.getByRole('link', { name: homeName, exact: true }),
++    submit: nav.getByRole('link', { name: submitName, exact: true }),
++    search: nav.getByRole('link', { name: searchName, exact: true }),
++    submitName,
++    searchName,
++  }
++}
++
++async function openHome(page, width, scale = 100, url = '/#/') {
++  await page.setViewportSize({ width, height })
++  await page.goto(url)
++  if (scale !== 100) await page.addStyleTag({ content: `html { font-size: ${scale}% }` })
++  const links = navLinks(page, width)
++  await expect(links.home).toBeVisible()
++  await page.evaluate(async () => { await document.fonts.ready })
++  return links
++}
++
++for (const width of widths) {
++  for (const scale of textScales) {
++    test(`nav fits at ${width}px and ${scale}% text`, async ({ page }) => {
++      const { nav, home, submit, search, submitName, searchName } = await openHome(page, width, scale)
++      await expect(nav.getByRole('link')).toHaveCount(3)
++      await expect(home).toHaveAttribute('aria-current', 'page')
++      await expect(submit).toHaveText(submitName, { useInnerText: true })
++      await expect(search).toHaveText(searchName, { useInnerText: true })
++
++      const [navBox, homeBox, submitBox, searchBox] = await Promise.all(
++        [nav, home, submit, search].map(target => target.boundingBox()),
++      )
++      for (const target of [homeBox, submitBox, searchBox]) {
++        expect(target.width).toBeGreaterThanOrEqual(44)
++        expect(target.height).toBeGreaterThanOrEqual(44)
++        expect(target.x).toBeGreaterThanOrEqual(navBox.x)
++        expect(target.x + target.width).toBeLessThanOrEqual(navBox.x + navBox.width + 1)
++        expect(target.y).toBeGreaterThanOrEqual(navBox.y)
++        expect(target.y + target.height).toBeLessThanOrEqual(navBox.y + navBox.height + 1)
++      }
++      const navOverflow = await nav.evaluate(element => element.scrollWidth - element.clientWidth)
++      expect(navOverflow).toBeLessThanOrEqual(1)
++
++      // The two short-label buttons stay next to each other even when the logo reflows.
++      if (width <= 640 || scale === 100) {
++        expect(Math.abs(submitBox.y - searchBox.y)).toBeLessThanOrEqual(1)
++        expect(submitBox.x + submitBox.width).toBeLessThanOrEqual(searchBox.x)
++        const onSameRow = homeBox.y + homeBox.height > submitBox.y
++        if (onSameRow) expect(homeBox.x + homeBox.width).toBeLessThanOrEqual(submitBox.x)
++        if (scale <= 125) expect(onSameRow).toBe(true)
++        if (scale === 100) expect(navBox.height).toBeCloseTo(width <= 640 ? 61 : 77, 0)
++      }
++    })
++  }
++}
++
++for (const width of interactionWidths) {
++  test(`wordmark spacing and line breaks at ${width}px`, async ({ page }) => {
++    const { home } = await openHome(page, width)
++    const words = await home.evaluate(logo => {
++      const walker = document.createTreeWalker(logo, NodeFilter.SHOW_TEXT)
++      const boxes = {}
++      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
++        for (const word of ['MN', "Parkinson's", 'Connect']) {
++          const start = node.textContent.indexOf(word)
++          if (start < 0) continue
++          const range = document.createRange()
++          range.setStart(node, start)
++          range.setEnd(node, start + word.length)
++          const { left, right, top } = range.getBoundingClientRect()
++          boxes[word] = { left, right, top }
++        }
++      }
++      return boxes
++    })
++    const { MN: mn, "Parkinson's": parkinsons, Connect: connect } = words
++    expect(parkinsons.left - mn.right).toBeGreaterThan(1)
++    expect(Math.abs(parkinsons.top - mn.top)).toBeLessThan(1)
++    if (width <= 640) {
++      expect(connect.top).toBeGreaterThan(parkinsons.top)
++      expect(Math.abs(connect.left - mn.left)).toBeLessThan(1)
++    } else {
++      expect(connect.left - parkinsons.right).toBeGreaterThan(1)
++      expect(Math.abs(connect.top - parkinsons.top)).toBeLessThan(1)
++    }
++  })
++}
++
++async function expectVisibleKeyboardFocus(link) {
++  await expect(link).toBeFocused()
++  await expect(link).toHaveCSS('outline-style', 'solid')
++  await expect(link).toHaveCSS('outline-width', '3px')
++}
++
++const keyboardCases = [
++  ...interactionWidths.map(width => ({ width, scale: 100 })),
++  { width: 320, scale: 200 },
++]
++
++for (const { width, scale } of keyboardCases) {
++  test(`keyboard order, focus and hash routes at ${width}px and ${scale}% text`, async ({ page }) => {
++    const { nav, home, submit, search } = await openHome(page, width, scale, '/?src=nav-regression#/')
++    const main = page.getByRole('main')
++    const skip = page.getByRole('link', { name: 'Skip to main content' })
++    await expect(main).toBeFocused()
++    for (const link of [search, submit, home, skip]) {
++      await page.keyboard.press('Shift+Tab')
++      await expectVisibleKeyboardFocus(link)
++    }
++    for (const link of [home, submit]) {
++      await page.keyboard.press('Tab')
++      await expectVisibleKeyboardFocus(link)
++    }
++    await page.keyboard.press('Enter')
++    await expect(page).toHaveURL(/\?src=nav-regression#\/submit$/)
++    await expect(page.getByRole('heading', { name: 'Submit an Activity' })).toBeVisible()
++    await expect(nav.locator('[aria-current="page"]')).toHaveCount(1)
++    await expect(submit).toHaveAttribute('aria-current', 'page')
++    await expect(main).toBeFocused()
++
++    await page.keyboard.press('Shift+Tab')
++    await expectVisibleKeyboardFocus(search)
++    await page.keyboard.press('Enter')
++    await expect(page).toHaveURL(/\?src=nav-regression#\/search$/)
++    await expect(page.getByRole('heading', { name: 'All activities' })).toBeVisible()
++    await expect(nav.locator('[aria-current="page"]')).toHaveCount(1)
++    await expect(search).toHaveAttribute('aria-current', 'page')
++    await expect(main).toBeFocused()
++
++    for (const link of [search, submit, home]) {
++      await page.keyboard.press('Shift+Tab')
++      await expectVisibleKeyboardFocus(link)
++    }
++    await page.keyboard.press('Enter')
++    await expect(page).toHaveURL(/\?src=nav-regression#\/$/)
++    await expect(page.getByRole('heading', { name: 'Find Your Community in Minnesota' })).toBeVisible()
++    await expect(nav.locator('[aria-current="page"]')).toHaveCount(1)
++    await expect(home).toHaveAttribute('aria-current', 'page')
++    await expect(main).toBeFocused()
++  })
++}
++
++test.describe('touch input', () => {
++  test.use({ hasTouch: true })
++
++  test('all three nav links respond to a tap at 320px', async ({ page }) => {
++    const { home, submit, search } = await openHome(page, 320)
++    for (const link of [submit, search, home]) {
++      await link.tap()
++      await expect(link).toHaveAttribute('aria-current', 'page')
++    }
++  })
++})
++
++const scrollCases = [
++  { width: 320, scale: 100, motion: 'reduce' },
++  { width: 320, scale: 200, motion: 'reduce' },
++  { width: 640, scale: 100, motion: 'no-preference' },
++  { width: 641, scale: 100, motion: 'reduce' },
++  { width: 1280, scale: 100, motion: 'no-preference' },
++]
++
++for (const { width, scale, motion } of scrollCases) {
++  test(`category cue aligns with sticky nav at ${width}px, ${scale}% text, motion ${motion}`, async ({ page }) => {
++    await page.emulateMedia({ reducedMotion: motion })
++    await openHome(page, width <= 640 ? 1280 : 375, scale)
++    // Change the nav's height after mount to exercise the offset at activation.
++    await page.setViewportSize({ width, height })
++    const { nav } = navLinks(page, width)
++    const cue = page.getByRole('button', { name: 'Or browse by category' })
++    const heading = page.getByRole('heading', { name: 'Browse by Category', exact: true })
++    const firstCategory = page.getByRole('button', { name: 'Find Activity type 1 activities', exact: true })
++    await expect(firstCategory).toBeAttached()
++
++    const gapFromNav = () => heading.evaluate((element, name) => {
++      const nav = document.querySelector(`nav[aria-label="${name}"]`)
++      return element.closest('section').getBoundingClientRect().top - nav.getBoundingClientRect().bottom
++    }, navigationName)
++
++    expect(await gapFromNav()).toBeGreaterThan(10)
++    if (motion === 'reduce') {
++      await cue.focus()
++      await page.keyboard.press('Enter')
++    } else {
++      await cue.click()
++    }
++    await expect(heading).toBeFocused()
++    await expect.poll(async () => Math.abs(await gapFromNav())).toBeLessThanOrEqual(2)
++    expect(Math.abs((await nav.boundingBox()).y)).toBeLessThanOrEqual(1)
++    await expect(page).toHaveURL(/#\/$/)
++    await page.keyboard.press('Tab')
++    await expect(firstCategory).toBeFocused()
++  })
++}
