@@ -1046,27 +1046,23 @@ footer .footer-line a { color: #b8ccab; }
 }
 
 /* ─── Disclaimer Modal ─── */
-.disclaimer-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 9999;
-  background: rgba(18, 18, 17, 0.65);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1.25rem;
+.disclaimer-modal::backdrop {
+  background: #e6ede2;
+  background-image: radial-gradient(ellipse at 15% 20%, #f9f9ee, transparent 65%);
 }
 
 .disclaimer-modal {
-  background: var(--bg);
-  border-radius: 1rem;
+  margin: auto;
+  color: var(--text);
+  background: var(--white);
+  border: 1px solid #ccd9c8;
+  border-radius: 1.25rem;
   max-width: 580px;
-  width: 100%;
-  padding: 2.5rem 2rem 2rem;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
-  text-align: center;
+  width: calc(100% - 2rem);
+  max-height: calc(100dvh - 2rem);
+  overflow: auto;
+  padding: clamp(1.3rem, 4vw, 2.6rem);
+  box-shadow: 0 16px 60px rgba(32, 62, 41, 0.12);
   animation: disclaimerIn 0.3s ease-out;
 }
 
@@ -1075,33 +1071,25 @@ footer .footer-line a { color: #b8ccab; }
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-.disclaimer-modal .disclaimer-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 3rem;
-  height: 3rem;
-  border-radius: 50%;
-  background: var(--primary-light);
+.disclaimer-brand {
+  margin-bottom: 1.4rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+  font-weight: 700;
   color: var(--primary);
-  margin-bottom: 1rem;
-}
-.disclaimer-modal .disclaimer-icon svg {
-  width: 1.5rem;
-  height: 1.5rem;
 }
 
 .disclaimer-modal h2 {
-  font-size: 1.25rem;
-  font-weight: 700;
-  color: var(--text);
+  font: 400 clamp(1.8rem, 5vw, 2.5rem)/1.12 'DM Serif Display', Georgia, serif;
+  color: #213e2c;
   margin-bottom: 1rem;
 }
+.disclaimer-modal h2:focus { outline: none; }
 
 .disclaimer-modal .disclaimer-body {
   font-size: 0.95rem;
   line-height: 1.7;
-  color: var(--muted);
+  color: #47574a;
   text-align: left;
   margin-bottom: 1.75rem;
 }

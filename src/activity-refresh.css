@@ -1,0 +1,138 @@
+/* Results and listings share the site's typefaces, palette and focus ring. */
+.activity-list .result-card {
+  border-radius: 18px;
+  padding: clamp(1.05rem, 2.4vw, 1.6rem);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.result-card-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) fit-content(42%);
+  gap: .3rem .85rem;
+  align-items: start;
+  margin-bottom: .85rem;
+}
+.result-card-type, .listing-type {
+  color: var(--primary);
+  font-size: .88rem;
+  font-weight: 700;
+}
+.result-card-type, .result-card .card-name { grid-column: 1; }
+.result-card .card-name {
+  font: 400 clamp(1.35rem, 2vw, 1.65rem)/1.16 'DM Serif Display', Georgia, serif;
+}
+.result-card-cost {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  padding: .25rem .7rem;
+  border: 1px solid #d7dfd3;
+  border-radius: 999px;
+  color: #394636;
+  background: #f7f8f4;
+  font-size: .86rem;
+  font-weight: 650;
+}
+.result-card-cost.is-free {
+  background: #e4efde;
+  color: #284e1f;
+  border-color: #c5d9bd;
+}
+.result-card-fact {
+  display: flex;
+  gap: .6rem;
+  align-items: flex-start;
+  margin: .55rem 0;
+  font-size: .98rem;
+  color: var(--text);
+}
+.result-card-fact svg, .listing-venue svg {
+  flex: 0 0 auto;
+  width: 1.08rem;
+  height: 1.08rem;
+  margin-top: .17em;
+  color: var(--primary);
+}
+.result-card-address {
+  display: block;
+  color: #506052;
+  font-size: .94rem;
+}
+.result-card-distance { color: var(--primary); font-weight: 600; }
+.result-card-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: .25rem .75rem;
+  margin-top: .95rem;
+  border-top: 1px solid var(--border);
+  padding-top: .68rem;
+  color: #506052;
+  font-size: .91rem;
+}
+.result-card-details { color: var(--primary); font-weight: 700; }
+.result-card-details span { margin-inline-start: .12rem; }
+
+.listing-intro { overflow-wrap: anywhere; }
+.listing-venue { display: flex; align-items: baseline; gap: .45rem; }
+.listing-venue svg { align-self: flex-start; margin-top: .2em; }
+.listing-type { margin-bottom: .4rem; }
+.listing-meta { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem .65rem; margin-top: .9rem; font-size: .95rem; }
+.listing-meta .listing-active { display: inline-flex; align-items: center; gap: .4rem; color: #385b31; }
+.listing-active::before { content: ''; width: .48rem; height: .48rem; border-radius: 50%; background: currentColor; }
+.listing-page .info-value, .listing-page .cost-display { min-width: 0; overflow-wrap: anywhere; }
+
+@media screen {
+  .listing-page.detail-wrap {
+    max-width: 1020px;
+    padding: clamp(1rem, 3vw, 2rem) clamp(1rem, 3vw, 2rem) 3rem;
+  }
+  .listing-page .detail-topbar { margin-bottom: clamp(1rem, 2vw, 1.5rem); }
+  .listing-intro {
+    border-radius: 20px;
+    border: 1px solid #d1dfcc;
+    background: #eff5eb;
+    padding: clamp(1.3rem, 4vw, 2.5rem);
+    margin-bottom: 1.3rem;
+  }
+  .listing-intro .detail-title {
+    font-weight: 400;
+    font-size: clamp(2rem, 5vw, 3.25rem);
+    line-height: 1.12;
+    color: #213e2c;
+    margin: 0 0 .5rem;
+  }
+  .listing-intro .listing-venue { color: #405744; font-size: 1.07rem; }
+  .listing-page .detail-grid { grid-template-areas: 'details signup'; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 1.2rem; }
+  .listing-page .detail-grid > aside { grid-area: signup; }
+  .listing-page .listing-information { grid-area: details; }
+  .listing-page .info-card, .listing-page .cost-register-card { padding: clamp(1.1rem, 2.5vw, 1.55rem); }
+  .listing-page .info-card h2, .listing-page .sidebar-card-title {
+    color: #243f2b;
+    font: 400 1.45rem/1.25 'DM Serif Display', Georgia, serif;
+    text-transform: none;
+    letter-spacing: normal;
+    margin-bottom: .9rem;
+  }
+  .listing-page .cost-register-card { border-top: 4px solid var(--primary); }
+  .listing-page .cost-free { align-self: flex-start; color: #284e1f; background: #e4efde; border-color: #c5d9bd; }
+  .listing-page .contact-link, .listing-page .directions-link {
+    min-height: 44px;
+    text-decoration: underline;
+    text-underline-offset: .18em;
+  }
+  .listing-page .more-info a { text-decoration: underline; text-underline-offset: .18em; }
+  .listing-page .register-cta:focus-visible { outline-color: var(--primary); }
+}
+@media screen and (max-width: 680px) {
+  .listing-page .detail-grid { grid-template-areas: 'signup' 'details'; grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .listing-page .detail-grid > aside { position: static; }
+  .listing-page .detail-action-btn { min-height: 44px; }
+}
+@media screen and (max-width: 480px) {
+  .listing-page .info-row { display: grid; gap: .2rem; }
+  .listing-page .info-row-action .info-label { display: none; }
+  .listing-page .detail-topbar { gap: .25rem .5rem; }
+  .listing-page .detail-actions { gap: .3rem; }
+  .listing-page .detail-action-btn { padding-inline: .65rem; }
+}

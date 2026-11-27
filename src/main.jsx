@@ -12,6 +12,9 @@ import '@fontsource/dm-serif-display/400.css'
 import '@fontsource/dm-serif-display/400-italic.css'
 
 import './index.css'
+import './home-refresh.css'
+import './finder-refresh.css'
+import './activity-refresh.css'
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

@@ -840,38 +840,37 @@ function ScrollToTop() {
 // NAV
 // ─────────────────────────────────────────────
 function Nav() {
-  // Use anchor tags (semantically correct for navigation) and mark the active
-  // page with aria-current="page" so screen readers announce "you are here".
   const hash = useRoute()
   const { path } = parseHash(hash)
   const onHome = path === '/' || path === ''
   const onSearch = path === '/search'
   const onSubmit = path === '/submit'
   return (
-    <nav aria-label="Main site navigation">
-      <div className="nav-inner">
+    <nav className="site-nav" aria-label="Main site navigation">
+      <div className="site-nav-inner">
         <a
           href="#/"
-          className="nav-logo"
+          className="site-brand"
           aria-label="MN Parkinson's Connect home"
           aria-current={onHome ? 'page' : undefined}
         >
-          MN <span>Parkinson's Connect</span>
+          <span className="site-brand-mark" aria-hidden="true">MN</span>
+          <span className="site-brand-name">Parkinson's <strong>Connect</strong><small>Minnesota</small></span>
         </a>
-        <div className="nav-links">
+        <div className="site-nav-links">
+          <a
+            href="#/search"
+            className="site-nav-link site-nav-link-primary"
+            aria-current={onSearch ? 'page' : undefined}
+          >
+            Find activities <span aria-hidden="true">→</span>
+          </a>
           <a
             href="#/submit"
-            className="btn btn-outline nav-cta"
+            className="site-nav-link site-nav-link-secondary"
             aria-current={onSubmit ? 'page' : undefined}
           >
             Submit an activity
-          </a>
-          <a
-            href="#/search"
-            className="btn btn-outline nav-cta"
-            aria-current={onSearch ? 'page' : undefined}
-          >
-            Find activities near you
           </a>
         </div>
       </div>
@@ -932,7 +931,7 @@ function HeroVideo() {
 
   return (
     <>
-      <div className="hero-video" aria-hidden="true">
+      <div className="home-video" aria-hidden="true">
         <video
           ref={videoRef}
           src="/serene.mp4"
@@ -944,11 +943,10 @@ function HeroVideo() {
           onCanPlay={e => e.currentTarget.classList.add('can-play')}
         />
       </div>
-      <div className="hero-overlay" aria-hidden="true" />
       {/* WCAG 2.2.2 — auto-playing motion needs a visible way to stop it */}
       <button
         type="button"
-        className="hero-video-toggle"
+        className="home-video-toggle"
         onClick={toggle}
         aria-label={paused ? 'Play background video' : 'Pause background video'}
       >
@@ -960,9 +958,13 @@ function HeroVideo() {
 
 function Home() {
   const [zip, setZip] = useState('')
+  const [zipError, setZipError] = useState('')
+  const zipInputRef = useRef(null)
   const [types, setTypes] = useState([])
   const [typeEmojis, setTypeEmojis] = useState({})
   const [activityCount, setActivityCount] = useState(null)
+  const [categoryStatus, setCategoryStatus] = useState('loading')
+  const [categoryRequest, setCategoryRequest] = useState(0)
   const { coords: userCoords, loading: locLoading, error: locError, requestLocation } = useUserLocation()
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(() =>
     typeof window !== 'undefined' && typeof window.matchMedia === 'function'
@@ -990,7 +992,10 @@ function Home() {
   }, [userCoords])
 
   useEffect(() => {
+    let cancelled = false
+    setCategoryStatus('loading')
     fetchCatalog().then(acts => {
+      if (cancelled) return
       const seen = new Set()
       const emojis = {}
       acts.forEach(a => {
@@ -1007,91 +1012,130 @@ function Home() {
       setTypes(withoutHidden([...seen], HIDDEN_ACTIVITY_TYPES).sort())
       setTypeEmojis(emojis)
       setActivityCount(acts.length)
-    }).catch(() => {})
-  }, [])
+      setCategoryStatus('ready')
+    }).catch(() => {
+      if (!cancelled) setCategoryStatus('error')
+    })
+    return () => { cancelled = true }
+  }, [categoryRequest])
 
   const handleSearch = (e) => {
     e.preventDefault()
-    const p = new URLSearchParams()
-    if (userCoords) {
-      p.set('lat', String(userCoords[0]))
-      p.set('lng', String(userCoords[1]))
-      p.set('distance', '50')
-    } else {
-      const zipValid = normalizeZip(zip)
-      if (zipValid) p.set('zip', zipValid)
+    const zipValid = normalizeZip(zip)
+    if (!zipValid) {
+      setZipError('Enter a 5-digit ZIP code to search nearby.')
+      zipInputRef.current?.focus()
+      return
     }
+    setZipError('')
+    const p = new URLSearchParams()
+    p.set('zip', zipValid)
     navigate(`#/search?${p.toString()}`)
   }
 
   return (
-    <div>
-      <section className="hero">
-        {!prefersReducedMotion && <HeroVideo />}
-        <div className="hero-content">
-          <div className="hero-eyebrow">Helping you connect with community</div>
-          <h1>Find Your <em>Community</em> in Minnesota</h1>
-          <p>Connecting people with Parkinson's and their caregivers to local activities, support groups, and resources across the state.</p>
+    <div className="home-page">
+      <section className="home-hero" aria-labelledby="home-title">
+        <div className="home-hero-media">
+          {!prefersReducedMotion && <HeroVideo />}
+        </div>
+        <div className="home-hero-wash" aria-hidden="true" />
+        <div className="home-hero-inner">
+          <div className="home-hero-copy">
+            <h1 id="home-title">Find your <em>community</em> in Minnesota.</h1>
+            <p>Discover activities, support groups, and local connections for people with Parkinson's and their caregivers across the state.</p>
+            <button
+              type="button"
+              className="home-category-jump"
+              onClick={() => {
+                document.getElementById('home-categories-title')?.focus({ preventScroll: true })
+                document.getElementById('home-categories')?.scrollIntoView({ behavior: prefersReducedMotion ? 'auto' : 'smooth', block: 'start' })
+              }}
+            >
+              Explore activity types <span aria-hidden="true">↓</span>
+            </button>
+          </div>
 
-          <form className="search-box" onSubmit={handleSearch}>
-          <label className="sr-only" htmlFor="home-zip">
-            Zip code
-          </label>
-          <input
-            id="home-zip"
-            className="zip-input"
-            type="text"
-            inputMode="numeric"
-            pattern="\d*"
-            placeholder="Zip Code"
-            autoComplete="postal-code"
-            value={zip}
-            onChange={e => setZip(e.target.value)}
-            maxLength={5}
-          />
-          <button
-            type="button"
-            onClick={requestLocation}
-            disabled={locLoading}
-            className="btn-loc"
-            aria-describedby={locError ? 'home-loc-error' : undefined}
-          >
-            <span className="btn-loc-icon" aria-hidden="true">{locLoading ? <span className="btn-loc-spinner" /> : <Icon.location />}</span>
-            <span className="btn-loc-label">{locLoading ? 'Locating…' : 'Use my location'}</span>
-          </button>
-          {locError && (
-            <span id="home-loc-error" className="loc-error" role="alert">
-              {locError}
-            </span>
-          )}
-          <button type="submit" className="btn btn-primary">Search</button>
-        </form>
+          <div className="home-finder-card">
+            <h2>Find activities near you</h2>
+            <form noValidate onSubmit={handleSearch}>
+              <label htmlFor="home-zip">ZIP code</label>
+              <div className="home-zip-row">
+                <input
+                  ref={zipInputRef}
+                  id="home-zip"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]{5}"
+                  placeholder="e.g. 55401"
+                  autoComplete="postal-code"
+                  value={zip}
+                  onChange={e => { setZip(e.target.value); setZipError('') }}
+                  maxLength={5}
+                  aria-invalid={zipError ? true : undefined}
+                  aria-describedby={zipError ? 'home-zip-error' : undefined}
+                />
+                <button type="submit" className="home-zip-submit">Search by ZIP <span aria-hidden="true">→</span></button>
+              </div>
+              {zipError && <p id="home-zip-error" className="home-search-error" role="alert">{zipError}</p>}
+            </form>
+            <div className="home-search-divider" aria-hidden="true"><span>or</span></div>
+            <button
+              type="button"
+              onClick={requestLocation}
+              disabled={locLoading}
+              className="home-location-action"
+              aria-describedby={locError ? 'home-loc-error' : undefined}
+            >
+              <Icon.location /> {locLoading ? 'Finding your location…' : 'Use my location'}
+            </button>
+            {locError && <p id="home-loc-error" className="home-search-error" role="alert">{locError}</p>}
+            <a href="#/search" className="home-browse-all">Browse all activities <span aria-hidden="true">→</span></a>
+          </div>
         </div>
       </section>
 
-      <section className="categories container">
-        <h2>Browse by Category</h2>
-        {activityCount > 0 && (
-          <p className="categories-sub">{activityCount} {activityCount === 1 ? 'activity' : 'activities'} across Minnesota</p>
-        )}
-        {types.length > 0 ? (
-          <div className="cat-grid">
-            {types.map(type => (
-              <button
-                type="button"
-                key={type}
-                className="cat-card"
-                aria-label={`Find ${type} activities`}
-                onClick={() => navigate(`#/search?type=${encodeURIComponent(type)}`)}
-              >
-                <span className="cat-card-icon" aria-hidden="true">{typeEmojis[type] || getCategoryEmoji(type)}</span>
-                {type}
-              </button>
-            ))}
+      <section id="home-categories" className="home-categories" aria-labelledby="home-categories-title">
+        <div className="home-categories-inner">
+          <div className="home-categories-heading">
+            <div>
+              <h2 id="home-categories-title" tabIndex="-1">Explore by activity type</h2>
+              {activityCount > 0 && <p>{activityCount} {activityCount === 1 ? 'activity' : 'activities'} across Minnesota</p>}
+            </div>
+            <a href="#/search" className="home-categories-all">View all activities <span aria-hidden="true">→</span></a>
           </div>
-        ) : (
-          <div className="state-msg" role="status"><div className="spinner" aria-hidden="true" /><p>Loading categories…</p></div>
-        )}
+          {categoryStatus === 'loading' ? (
+            <div className="home-category-state" role="status"><div className="spinner" aria-hidden="true" /><p>Loading activity types…</p></div>
+          ) : categoryStatus === 'error' ? (
+            <div className="home-category-state" role="alert">
+              <h3>We couldn't load activity types right now.</h3>
+              <p>Please try again in a moment.</p>
+              <button type="button" className="home-state-action" onClick={() => setCategoryRequest(n => n + 1)}>Try again</button>
+            </div>
+          ) : types.length > 0 ? (
+            <div className="home-category-grid">
+              {types.map(type => (
+                <button
+                  type="button"
+                  key={type}
+                  className="home-category-card"
+                  aria-label={`Find ${type} activities`}
+                  onClick={() => navigate(`#/search?type=${encodeURIComponent(type)}`)}
+                >
+                  <span className="home-category-icon" aria-hidden="true">{typeEmojis[type] || getCategoryEmoji(type)}</span>
+                  <span className="home-category-name">{type}</span>
+                  <span className="home-category-arrow" aria-hidden="true">↗</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="home-category-state">
+                <h3>{activityCount === 0 ? 'No activities are listed yet.' : "Activity types aren't available right now."}</h3>
+              <p>{activityCount === 0 ? 'Know of a local activity? You can suggest one for the directory.' : 'You can still browse all activities.'}</p>
+              <a className="home-state-action" href={activityCount === 0 ? '#/submit' : '#/search'}>{activityCount === 0 ? 'Submit an activity' : 'Browse all activities'}</a>
+            </div>
+          )}
+        </div>
       </section>
 
       <SiteFooter />
@@ -1232,10 +1276,19 @@ function SearchResults({ params }) {
   const [filterOptions, setFilterOptions] = useState(EMPTY_FILTER_OPTIONS)
   const [showFilters, setShowFilters] = useState(false)
   const { coords: userCoords, loading: locLoading, error: locError, requestLocation } = useUserLocation()
+  const filterDialogRef = useRef(null)
+  const filterToggleRef = useRef(null)
+  const desktopZipRef = useRef(null)
+  const mobileZipRef = useRef(null)
+  const locationRequestPendingRef = useRef(false)
+  const [zipError, setZipError] = useState(false)
 
   // filter state (multi-select as arrays)
   const [q, setQ] = useState(params.get('q') || '')
   const [zip, setZip] = useState((params.get('zip') || '').trim())
+  const [locationMode, setLocationMode] = useState(() =>
+    params.get('lat') && params.get('lng') ? 'coords' : params.get('zip') ? 'zip' : 'none'
+  )
   // Hidden values are scrubbed so stale bookmarked URLs (?type=Exercise, ?intensity=Heavy)
   // can't apply a filter the sidebar no longer offers a checkbox for
   const [selType, setSelType] = useState(withoutHidden(paramToArray(params.get('type')), HIDDEN_ACTIVITY_TYPES))
@@ -1250,7 +1303,9 @@ function SearchResults({ params }) {
     return (params.get('zip') || params.get('lat')) ? DISTANCE_DEFAULT : null
   })
 
+  const latestLoadRef = useRef(0)
   const load = useCallback(async () => {
+    const requestId = ++latestLoadRef.current
     setLoading(true)
     setError(null)
     try {
@@ -1267,7 +1322,7 @@ function SearchResults({ params }) {
         const b = parseFloat(lngP)
         return (!isNaN(a) && !isNaN(b)) ? [a, b] : null
       })() : null
-      const coords = userCoords || coordsFromUrl
+      const coords = coordsFromUrl
       const hasLocation = zipParam || coords
       const data = await fetchActivities({
         q: params.get('q') || undefined,
@@ -1280,15 +1335,18 @@ function SearchResults({ params }) {
         daysOfWeek: daysParam ? paramToArray(daysParam) : undefined,
         maxDistance: params.get('distance') ? Number(params.get('distance')) : (hasLocation ? DISTANCE_DEFAULT : undefined),
       })
-      setActivities(data)
+      if (requestId === latestLoadRef.current) setActivities(data)
     } catch(e) {
-      setError(e.message)
+      if (requestId === latestLoadRef.current) setError(e.message)
     } finally {
-      setLoading(false)
+      if (requestId === latestLoadRef.current) setLoading(false)
     }
-  }, [params.toString(), userCoords?.join(',')])
+  }, [params.toString()])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    load()
+    return () => { latestLoadRef.current++ }
+  }, [load])
 
   // Full catalog (ignores URL filters) so filter checklists always list every activity type / option,
   // not only values present in the current filtered result set.
@@ -1329,6 +1387,8 @@ function SearchResults({ params }) {
   useEffect(() => {
     setQ(params.get('q') || '')
     setZip((params.get('zip') || '').trim())
+    setZipError(false)
+    setLocationMode(params.get('lat') && params.get('lng') ? 'coords' : params.get('zip') ? 'zip' : 'none')
     setSelType(withoutHidden(paramToArray(params.get('type')), HIDDEN_ACTIVITY_TYPES))
     setSelIntensity(withoutHidden(paramToArray(params.get('intensity')), HIDDEN_INTENSITIES))
     setSelCost(paramToArray(params.get('cost')))
@@ -1340,277 +1400,293 @@ function SearchResults({ params }) {
     setMaxDistance(hasLocation ? (d != null && !isNaN(n) && n >= DISTANCE_MIN && n <= DISTANCE_MAX ? n : DISTANCE_DEFAULT) : null)
   }, [params.toString()])
 
-  const applyFilters = (closePanel = true) => {
-    const p = new URLSearchParams()
-    const zipTrimmed = (zip && String(zip).trim()) || ''
-    const zipValid = normalizeZip(zipTrimmed)
-    const qTrimmed = (q && String(q).trim()) || ''
-    if (qTrimmed) p.set('q', qTrimmed)
-    // Location precedence: this component's own geolocation, else a lat/lng
-    // that arrived via the URL (e.g. "Use my location" on the home page),
-    // else a typed zip. Without the URL fallback, rebuilding the query here
-    // would silently drop the user's "near me" location.
-    const urlLat = params.get('lat')
-    const urlLng = params.get('lng')
-    if (userCoords) {
-      p.set('lat', String(userCoords[0]))
-      p.set('lng', String(userCoords[1]))
-      p.set('distance', String(maxDistance ?? DISTANCE_DEFAULT))
-    } else if (urlLat && urlLng) {
-      p.set('lat', urlLat)
-      p.set('lng', urlLng)
-      p.set('distance', String(maxDistance ?? DISTANCE_DEFAULT))
-    } else {
-      if (zipValid) p.set('zip', zipValid)
-      if (maxDistance != null && zipValid) p.set('distance', String(maxDistance))
+  useEffect(() => {
+    if (!userCoords || !locationRequestPendingRef.current) return
+    locationRequestPendingRef.current = false
+    setLocationMode('coords')
+    setZip('')
+    setZipError(false)
+    setMaxDistance(distance => distance ?? DISTANCE_DEFAULT)
+  }, [userCoords])
+
+  useEffect(() => {
+    const media = window.matchMedia('(min-width: 701px)')
+    const closeOnDesktop = () => {
+      if (media.matches && filterDialogRef.current?.open) filterDialogRef.current.close()
     }
-    if (selType.length) p.set('type', selType.join(','))
-    if (selIntensity.length) p.set('intensity', selIntensity.join(','))
-    if (selCost.length) p.set('cost', selCost.join(','))
-    if (selFormat.length) p.set('format', selFormat.join(','))
-    if (selDays.length) p.set('days', selDays.join(','))
-    // No-op guard: the URL→state sync effect creates fresh array references,
-    // which trips the auto-apply effects on mount. If rebuilding produces the
-    // current URL, skip navigating so we don't clobber params (and avoid
-    // redundant history entries / reload loops).
-    const next = p.toString()
-    if (next === params.toString()) {
-      if (closePanel) setShowFilters(false)
-      return
-    }
-    navigate(`#/search?${next}`)
-    if (closePanel) setShowFilters(false)
+    media.addEventListener('change', closeOnDesktop)
+    return () => media.removeEventListener('change', closeOnDesktop)
+  }, [])
+
+  const closeFilters = () => {
+    if (filterDialogRef.current?.open) filterDialogRef.current.close()
+    setShowFilters(false)
   }
 
-  // Auto-apply when checkbox filters change (results update immediately)
-  const didMountFilters = useRef(false)
-  useEffect(() => {
-    if (!didMountFilters.current) {
-      didMountFilters.current = true
-      return
-    }
-    applyFilters(false)
-  }, [selType, selIntensity, selCost, selFormat, selDays])
+  const cancelFilters = () => {
+    locationRequestPendingRef.current = false
+    setZip((params.get('zip') || '').trim())
+    setZipError(false)
+    setLocationMode(params.get('lat') && params.get('lng') ? 'coords' : params.get('zip') ? 'zip' : 'none')
+    setSelType(withoutHidden(paramToArray(params.get('type')), HIDDEN_ACTIVITY_TYPES))
+    setSelIntensity(withoutHidden(paramToArray(params.get('intensity')), HIDDEN_INTENSITIES))
+    setSelCost(paramToArray(params.get('cost')))
+    setSelFormat(paramToArray(params.get('format')))
+    setSelDays(paramToArray(params.get('days')))
+    const distance = Number(params.get('distance'))
+    setMaxDistance(params.get('zip') || params.get('lat')
+      ? distance >= DISTANCE_MIN && distance <= DISTANCE_MAX ? distance : DISTANCE_DEFAULT
+      : null)
+    closeFilters()
+  }
 
-  // Auto-apply distance changes with debounce so slider dragging isn't disrupted
-  const didMountDistance = useRef(false)
-  const distanceDebounceRef = useRef(null)
-  useEffect(() => {
-    if (!didMountDistance.current) {
-      didMountDistance.current = true
-      return
-    }
-    if (distanceDebounceRef.current) clearTimeout(distanceDebounceRef.current)
-    distanceDebounceRef.current = setTimeout(() => {
-      applyFilters(false)
-      distanceDebounceRef.current = null
-    }, 400)
-    return () => {
-      if (distanceDebounceRef.current) clearTimeout(distanceDebounceRef.current)
-    }
-  }, [maxDistance])
+  const openFilters = () => {
+    if (!filterDialogRef.current?.open) filterDialogRef.current?.showModal()
+    setShowFilters(true)
+  }
 
-  // Auto-apply when keyword search or zip change (debounced so we don't navigate on every keystroke).
-  // Scroll containment for the sidebar is handled by `overscroll-behavior` in CSS.
-  const didMountSearch = useRef(false)
-  const debounceRef = useRef(null)
-  useEffect(() => {
-    if (!didMountSearch.current) {
-      didMountSearch.current = true
+  const handleZipChange = event => {
+    locationRequestPendingRef.current = false
+    const next = event.target.value.replace(/\D/g, '').slice(0, 5)
+    setZip(next)
+    setLocationMode(next ? 'zip' : 'none')
+    setZipError(false)
+    if (next && maxDistance == null) setMaxDistance(DISTANCE_DEFAULT)
+  }
+
+  const handleUseLocation = () => {
+    locationRequestPendingRef.current = true
+    requestLocation()
+  }
+
+  const applyFilters = () => {
+    locationRequestPendingRef.current = false
+    const cleanedZip = zip.trim()
+    if (locationMode === 'zip' && !/^\d{5}$/.test(cleanedZip)) {
+      setZipError(true)
+      ;(filterDialogRef.current?.open ? mobileZipRef : desktopZipRef).current?.focus()
       return
     }
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(() => {
-      applyFilters(false)
-      debounceRef.current = null
-    }, 400)
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current)
+
+    const next = new URLSearchParams()
+    if (q.trim()) next.set('q', q.trim())
+    if (locationMode === 'zip') {
+      next.set('zip', cleanedZip)
+      next.set('distance', String(maxDistance ?? DISTANCE_DEFAULT))
+    } else if (locationMode === 'coords') {
+      const coords = userCoords || (params.get('lat') && params.get('lng')
+        ? [params.get('lat'), params.get('lng')]
+        : null)
+      if (coords) {
+        next.set('lat', String(coords[0]))
+        next.set('lng', String(coords[1]))
+        next.set('distance', String(maxDistance ?? DISTANCE_DEFAULT))
+      }
     }
-  }, [zip, q])
+    if (selType.length) next.set('type', selType.join(','))
+    if (selIntensity.length) next.set('intensity', selIntensity.join(','))
+    if (selCost.length) next.set('cost', selCost.join(','))
+    if (selFormat.length) next.set('format', selFormat.join(','))
+    if (selDays.length) next.set('days', selDays.join(','))
+
+    const query = next.toString()
+    if (query !== params.toString()) navigate(`#/search${query ? `?${query}` : ''}`)
+    closeFilters()
+  }
 
   const clearFilters = () => {
+    locationRequestPendingRef.current = false
     setSelType([]); setSelIntensity([]); setSelCost([])
     setSelFormat([]); setSelDays([]); setZip(''); setQ('')
-    setMaxDistance((params.get('zip') || params.get('lat')) ? DISTANCE_DEFAULT : null)
-    const keep = new URLSearchParams()
-    if (params.get('zip')) keep.set('zip', params.get('zip'))
-    else if (params.get('lat') && params.get('lng')) {
-      keep.set('lat', params.get('lat'))
-      keep.set('lng', params.get('lng'))
-      keep.set('distance', params.get('distance') || String(DISTANCE_DEFAULT))
-    }
-    navigate('#/search' + (keep.toString() ? `?${keep.toString()}` : ''))
+    setLocationMode('none'); setMaxDistance(null); setZipError(false)
+    if (params.toString()) navigate('#/search')
+    closeFilters()
   }
 
-  const activeFilterCount = selType.length + selIntensity.length + selCost.length + selFormat.length + selDays.length
+  const removeAppliedFilter = (key, value) => {
+    const next = new URLSearchParams(params.toString())
+    const remaining = paramToArray(next.get(key)).filter(item => item !== value)
+    if (remaining.length) next.set(key, remaining.join(','))
+    else next.delete(key)
+    navigate(`#/search${next.toString() ? `?${next}` : ''}`)
+  }
 
-  // Build list of active filter chips for display above results
-  const activeChips = [
-    ...selType.map(v => ({ label: v, remove: () => setSelType(selType.filter(x => x !== v)) })),
-    ...selIntensity.map(v => ({ label: v, remove: () => setSelIntensity(selIntensity.filter(x => x !== v)) })),
-    ...selCost.map(v => ({ label: v, remove: () => setSelCost(selCost.filter(x => x !== v)) })),
-    ...selFormat.map(v => ({ label: v, remove: () => setSelFormat(selFormat.filter(x => x !== v)) })),
-    ...selDays.map(v => ({ label: v, remove: () => setSelDays(selDays.filter(x => x !== v)) })),
-  ]
+  const appliedFilterCount = ['type', 'intensity', 'cost', 'format', 'days']
+    .reduce((count, key) => count + paramToArray(params.get(key)).length, 0)
+  const activeFilterCount = appliedFilterCount + (params.get('zip') || params.get('lat') ? 1 : 0)
+  const hasAppliedSearch = activeFilterCount > 0 || Boolean(params.get('q'))
+  const hasDraftLocation = locationMode === 'zip' && /^\d{5}$/.test(zip)
+    || locationMode === 'coords' && Boolean(userCoords || params.get('lat'))
+  const canClearDraft = Boolean(q || zip || locationMode === 'coords'
+    || selType.length || selIntensity.length || selCost.length || selFormat.length || selDays.length)
 
-  return (
-    <div>
-      <div className="search-header">
-        <form
-          className="search-header-inner"
-          role="search"
-          onSubmit={(e) => { e.preventDefault(); applyFilters() }}
-        >
-          <label className="sr-only" htmlFor="search-q">
-            Search by activity, place, or address
-          </label>
-          <input
-            id="search-q"
-            className="q-input"
-            type="search"
-            placeholder="Search activities (e.g. boxing, yoga)…"
-            value={q}
-            onChange={e => setQ(e.target.value)}
-            autoComplete="off"
-          />
-          <label className="sr-only" htmlFor="search-zip">
-            Zip code
-          </label>
-          <input
-            id="search-zip"
-            className="zip"
-            type="text"
-            inputMode="numeric"
-            pattern="\d*"
-            placeholder="Zip Code"
-            autoComplete="postal-code"
-            value={zip}
-            onChange={e => setZip(e.target.value)}
-            maxLength={5}
-            aria-describedby={locError ? 'search-loc-error' : undefined}
-          />
-          <button
-            type="button"
-            onClick={requestLocation}
-            disabled={locLoading}
-            className="btn-loc btn-loc-compact"
-            aria-describedby={locError ? 'search-loc-error' : undefined}
-          >
-            <span className="btn-loc-icon" aria-hidden="true">{locLoading ? <span className="btn-loc-spinner" /> : <Icon.location />}</span>
-            <span className="btn-loc-label">{locLoading ? 'Locating…' : 'Use my location'}</span>
+  const activeChips = ['type', 'intensity', 'cost', 'format', 'days'].flatMap(key =>
+    paramToArray(params.get(key)).map(value => ({ key, value }))
+  )
+
+  const renderFilterControls = (idPrefix, mobile = false) => (
+    <form className="finder-filter-form" noValidate onSubmit={event => { event.preventDefault(); applyFilters() }}>
+      <div className="finder-filter-heading">
+        <div>
+          <h2 id={`${idPrefix}-title`}>Filters &amp; location</h2>
+        </div>
+        {mobile && (
+          <button type="button" className="finder-sheet-close" onClick={cancelFilters} aria-label="Close filters">
+            <span aria-hidden="true">×</span>
           </button>
-          {locError && (
-            <span id="search-loc-error" className="loc-error" role="alert">
-              {locError}
-            </span>
-          )}
-          <button type="submit" className="btn btn-primary">Search</button>
-          <button
-            type="button"
-            className="btn btn-outline btn-filter-toggle"
-            aria-expanded={showFilters}
-            aria-controls="filters-panel"
-            onClick={() => setShowFilters(f => !f)}
-          >
-            {showFilters ? 'Hide filters' : 'Filters'}
-            {activeFilterCount > 0 && <span className="filter-badge" aria-label={`${activeFilterCount} active`}>{activeFilterCount}</span>}
-          </button>
-        </form>
+        )}
       </div>
-
-      <div className="results-layout">
-        {/* Filters sidebar */}
-        <aside
-          id="filters-panel"
-          className={`filters-panel ${showFilters ? 'filters-open' : ''}`}
-          aria-label="Activity filters"
-        >
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0.5rem'}}>
-            <strong style={{fontSize:'0.95rem'}}>Filters</strong>
-            {(selType.length > 0 || selIntensity.length > 0 || selCost.length > 0 || selFormat.length > 0 || selDays.length > 0 || (zip && maxDistance != null) || params.get('lat')) && (
-              <button onClick={clearFilters} className="filters-clear">Clear all</button>
-            )}
+      <div className="finder-filter-content">
+        <fieldset className="finder-location">
+          <legend className="filter-title">Location</legend>
+          <label className="finder-field-label" htmlFor={`${idPrefix}-zip`}>ZIP code</label>
+          <div className="finder-location-inputs">
+            <input
+              id={`${idPrefix}-zip`}
+              ref={mobile ? mobileZipRef : desktopZipRef}
+              className="finder-zip-input"
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]{5}"
+              autoComplete="postal-code"
+              placeholder="e.g. 55401"
+              value={zip}
+              onChange={handleZipChange}
+              maxLength={5}
+              aria-invalid={zipError || undefined}
+              aria-describedby={zipError ? `${idPrefix}-zip-error` : undefined}
+            />
+            <button type="button" className="finder-location-button" onClick={handleUseLocation} disabled={locLoading}>
+              <Icon.location />
+              <span>{locLoading ? 'Locating…' : 'Use my location'}</span>
+            </button>
           </div>
-
-          <FilterGroupMulti title="Activity Type" options={unionActivityTypes(filterOptions.activityType, DEFAULT_FILTER_OPTIONS.activityType)} value={selType} onChange={setSelType} initialVisible={6} />
+          {zipError && <p id={`${idPrefix}-zip-error`} className="finder-field-error" role="alert">Enter a five-digit ZIP code.</p>}
+          {locError && <p className="finder-field-error" role="alert">{locError}</p>}
+          {locationMode === 'coords' && (
+            <p className="finder-location-status" role="status">Current location selected. Apply filters to search nearby.</p>
+          )}
+          {locationMode !== 'none' && (
+            <button
+              type="button"
+              className="finder-clear-location"
+              onClick={() => { setLocationMode('none'); setZip(''); setMaxDistance(null); setZipError(false) }}
+            >
+              Clear location
+            </button>
+          )}
+          {hasDraftLocation && (
+            <div className="finder-distance">
+              <label className="distance-slider-label" htmlFor={`${idPrefix}-distance`}>
+                Search within <strong>{maxDistance ?? DISTANCE_DEFAULT} miles</strong>
+              </label>
+              <input
+                id={`${idPrefix}-distance`}
+                type="range"
+                className="distance-slider"
+                min={DISTANCE_MIN}
+                max={DISTANCE_MAX}
+                step={5}
+                value={maxDistance ?? DISTANCE_DEFAULT}
+                onChange={event => setMaxDistance(Number(event.target.value))}
+                aria-valuetext={`${maxDistance ?? DISTANCE_DEFAULT} miles`}
+              />
+              <div className="distance-ticks" aria-label="Quick distance choices">
+                {DISTANCE_QUICK.map(miles => (
+                  <button
+                    key={miles}
+                    type="button"
+                    className={`distance-tick ${(maxDistance ?? DISTANCE_DEFAULT) === miles ? 'active' : ''}`}
+                    aria-pressed={(maxDistance ?? DISTANCE_DEFAULT) === miles}
+                    onClick={() => setMaxDistance(miles)}
+                  >
+                    {miles} mi
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </fieldset>
+        <div className="finder-filter-groups">
+          <FilterGroupMulti title="Activity type" options={unionActivityTypes(filterOptions.activityType, DEFAULT_FILTER_OPTIONS.activityType)} value={selType} onChange={setSelType} initialVisible={6} />
           <FilterGroupMulti title="Intensity" options={unionIntensities(filterOptions.intensity, DEFAULT_FILTER_OPTIONS.intensity)} value={selIntensity} onChange={setSelIntensity} initialVisible={5} />
           <FilterGroupMulti title="Cost" options={unionSortedStrings(filterOptions.cost, DEFAULT_FILTER_OPTIONS.cost)} value={selCost} onChange={setSelCost} initialVisible={5} />
           <FilterGroupMulti title="Format" options={unionSortedStrings(filterOptions.format, DEFAULT_FILTER_OPTIONS.format)} value={selFormat} onChange={setSelFormat} initialVisible={5} />
           <FilterGroupMulti title="Days of week" options={unionDaysOfWeek(filterOptions.daysOfWeek, DEFAULT_FILTER_OPTIONS.daysOfWeek)} value={selDays} onChange={setSelDays} initialVisible={7} />
+        </div>
+      </div>
+      <div className="finder-filter-actions">
+        {canClearDraft && <button type="button" className="finder-reset" onClick={clearFilters}>Clear all</button>}
+        <button type="submit" className="btn btn-primary" disabled={locLoading}>Apply filters</button>
+      </div>
+    </form>
+  )
 
-          <fieldset className="filter-distance" aria-describedby="distance-help">
-            <legend className="filter-title">Distance from you</legend>
-            <p id="distance-help" className="filter-distance-desc">Enter your zip or use your location, then choose how far you’re willing to travel.</p>
-            <div style={{display:'flex',gap:'0.5rem',alignItems:'center',flexWrap:'wrap'}}>
-              <label className="sr-only" htmlFor="filter-zip">
-                Your zip code
-              </label>
-              <input
-              id="filter-zip"
-              type="text"
-              className="filter-zip-input"
-              inputMode="numeric"
-              pattern="\d*"
-              placeholder="Your zip code"
-              autoComplete="postal-code"
-              value={zip}
-              onChange={e => setZip(e.target.value)}
-              maxLength={5}
-              aria-describedby={locError ? 'filter-loc-error' : undefined}
+  return (
+    <div className="finder-page">
+      <header className="search-header">
+        <div className="finder-search-heading">
+          <h1>Find an activity that fits your life</h1>
+          <p>Search local programs, then narrow results by location, schedule, cost, and more.</p>
+        </div>
+        <form
+          className="search-header-inner"
+          role="search"
+          onSubmit={event => { event.preventDefault(); applyFilters() }}
+        >
+          <label className="finder-search-label" htmlFor="search-q">What are you looking for?</label>
+          <div className="finder-search-controls">
+            <input
+              id="search-q"
+              className="q-input"
+              type="search"
+              placeholder="Try boxing, yoga, or a place"
+              value={q}
+              onChange={event => setQ(event.target.value)}
+              autoComplete="off"
             />
-              <button
-                type="button"
-                onClick={requestLocation}
-                disabled={locLoading}
-                className="btn-loc"
-                aria-describedby={locError ? 'filter-loc-error' : undefined}
-              >
-                <span className="btn-loc-icon" aria-hidden="true">{locLoading ? <span className="btn-loc-spinner" /> : <Icon.location />}</span>
-                <span className="btn-loc-label">{locLoading ? 'Locating…' : 'Use my location'}</span>
-              </button>
-            </div>
-              {locError && <span id="filter-loc-error" className="loc-error" role="alert">{locError}</span>}
-            {((zip && /^\d{5}$/.test(zip)) || userCoords || params.get('lat')) && (
-            <>
-              <div className="distance-slider-label">Within <strong>{maxDistance ?? DISTANCE_DEFAULT} miles</strong></div>
-              <div className="distance-slider-wrap">
-                <input
-                  type="range"
-                  className="distance-slider"
-                  min={DISTANCE_MIN}
-                  max={DISTANCE_MAX}
-                  step={5}
-                  value={maxDistance ?? DISTANCE_DEFAULT}
-                  onChange={e => setMaxDistance(Number(e.target.value))}
-                  aria-label="Maximum distance"
-                  aria-valuetext={`${maxDistance ?? DISTANCE_DEFAULT} miles`}
-                />
-              </div>
-              <div className="distance-ticks">
-                {DISTANCE_QUICK.map(m => (
-                  <button
-                    key={m}
-                    type="button"
-                    className={`distance-tick ${(maxDistance ?? DISTANCE_DEFAULT) === m ? 'active' : ''}`}
-                    aria-pressed={(maxDistance ?? DISTANCE_DEFAULT) === m}
-                    onClick={() => setMaxDistance(m)}
-                  >
-                    {m} mi
-                  </button>
-                ))}
-              </div>
-            </>
-            )}
-          </fieldset>
+            <button type="submit" className="btn btn-primary" disabled={locLoading}>Search activities</button>
+            <button
+              ref={filterToggleRef}
+              type="button"
+              className="btn btn-outline btn-filter-toggle"
+              aria-expanded={showFilters}
+              aria-controls="mobile-filters"
+              onClick={openFilters}
+            >
+              Filters &amp; location
+              {activeFilterCount > 0 && <span className="filter-badge" aria-label={`${activeFilterCount} active`}>{activeFilterCount}</span>}
+            </button>
+          </div>
+        </form>
+      </header>
 
-          <button className="btn btn-primary" style={{width:'100%',marginTop:'1rem'}} onClick={applyFilters}>
-            Apply Filters
-          </button>
+      <dialog
+        id="mobile-filters"
+        ref={filterDialogRef}
+        className="finder-sheet"
+        aria-labelledby="mobile-filters-title"
+        onCancel={event => { event.preventDefault(); cancelFilters() }}
+        onClose={() => {
+          setShowFilters(false)
+          if (window.matchMedia('(max-width: 700px)').matches) filterToggleRef.current?.focus()
+        }}
+      >
+        {renderFilterControls('mobile-filters', true)}
+      </dialog>
+
+      <div className="results-layout">
+        <aside className="finder-sidebar" aria-labelledby="desktop-filters-title">
+          {renderFilterControls('desktop-filters')}
         </aside>
 
         {/* Results */}
-        <section aria-labelledby="results-heading">
+        <section className="finder-results" aria-labelledby="results-heading">
+          <div className="finder-results-title">
+            <h2 id="results-heading" className="results-heading">
+              {hasAppliedSearch ? 'Activities that match your search' : 'All activities'}
+            </h2>
+          </div>
           {loading ? (
             <div className="state-msg" role="status"><div className="spinner" aria-hidden="true"/><p>Loading activities…</p></div>
           ) : error ? (
@@ -1623,11 +1699,6 @@ function SearchResults({ params }) {
             </div>
           ) : (
             <>
-              <h1 id="results-heading" className="results-heading">
-                {(activeFilterCount > 0 || params.get('q') || params.get('zip') || params.get('lat'))
-                  ? 'Activities that match your search'
-                  : 'All activities'}
-              </h1>
               <div aria-live="polite" aria-atomic="true">
                 <p className="results-meta">
                   <strong>{activities.length}</strong> {activities.length === 1 ? 'activity' : 'activities'} found
@@ -1637,13 +1708,13 @@ function SearchResults({ params }) {
               </div>
               {activeChips.length > 0 && (
                 <div className="active-chips" aria-label="Active filters">
-                  {activeChips.map((c, i) => (
-                    <button key={i} className="chip" onClick={c.remove} aria-label={`Remove ${c.label} filter`}>
-                      {c.label} <span className="chip-x" aria-hidden="true">×</span>
+                  {activeChips.map(({ key, value }) => (
+                    <button key={`${key}-${value}`} type="button" className="chip" onClick={() => removeAppliedFilter(key, value)} aria-label={`Remove ${value} filter`}>
+                      {value} <span className="chip-x" aria-hidden="true">×</span>
                     </button>
                   ))}
                   {activeChips.length > 1 && (
-                    <button className="chip" onClick={clearFilters} style={{background:'transparent',borderStyle:'dashed'}}>
+                    <button type="button" className="chip finder-chip-clear" onClick={clearFilters}>
                       Clear all
                     </button>
                   )}
@@ -1653,8 +1724,8 @@ function SearchResults({ params }) {
                 <div className="empty-state">
                   <div className="empty-state-icon" aria-hidden="true">🔍</div>
                   <h2>No activities found</h2>
-                  <p>Try adjusting your filters, expanding your search distance, or searching from a different location.</p>
-                  <button className="btn btn-primary" onClick={clearFilters}>Clear all filters</button>
+                  <p>Try another search, choose a wider distance, or clear your filters to see more options.</p>
+                  {hasAppliedSearch && <button type="button" className="btn btn-primary" onClick={clearFilters}>Show all activities</button>}
                 </div>
               ) : (
                 <ul className="activity-list" role="list">
@@ -1672,46 +1743,47 @@ function SearchResults({ params }) {
 }
 
 function ActivityCard({ activity: a }) {
-  // The card is a list item with a real link on the activity name. A CSS
-  // "stretched link" (::after covering the card) keeps the whole card
-  // clickable while screen readers still get every detail line — a button
-  // with aria-label would have hidden the schedule, cost, and distance.
-  const isFreeCost = (() => {
-    const label = String(a.costCategory || a.costDisplay || '').trim()
-    return label === 'Free'
-  })()
+  const types = Array.isArray(a.type) ? a.type.join(' · ') : a.type
+  const cost = a.costCategory || a.costDisplay
+  const venue = a.format === 'Virtual' ? 'Online' : a.location
+  const address = a.address || (!venue && a.zip)
+  const schedule = a.schedule || a.daysOfWeek
+  // Some organizers supply a time with no day, others include the entire
+  // weekly schedule. Show the day field when it adds information.
+  const showDays = a.schedule && a.daysOfWeek && a.daysOfWeek.split(', ').some(
+    day => !a.schedule.toLowerCase().includes(day.toLowerCase())
+  )
 
   return (
-    <li className="activity-card">
-      <div className="card-top">
-        <div>
-          <h2 className="card-name">
-            <a className="card-link" href={`#/activity/${a.id}`}>
-              {a.name}
-              <span className="sr-only"> — view details</span>
-            </a>
-          </h2>
-          <div className="card-location">
-            {a.format === 'Virtual' ? '🌐 Virtual' : <><Icon.pin /> {a.location || a.address || a.zip}</>}
-          </div>
-          {a.address && (
-            <div className="card-address">{a.address}</div>
-          )}
-          {(a.daysOfWeek || a.schedule) && (
-            <div className="card-days">
-              {a.daysOfWeek ? <>Days: {a.daysOfWeek}</> : <>Schedule: {a.schedule}</>}
-            </div>
-          )}
-        </div>
-        <span className={`badge ${isFreeCost ? 'badge-cost-free' : ''}`}>
-          {isFreeCost ? 'Free' : <><Icon.dollar />{a.costCategory || a.costDisplay || '—'}</>}
-        </span>
+    <li className="activity-card result-card">
+      <div className="result-card-heading">
+        {types && <p className="result-card-type">{types}</p>}
+        <h2 className="card-name">
+          <a className="card-link" href={`#/activity/${a.id}`}>
+            {a.name}<span className="sr-only"> — view details</span>
+          </a>
+        </h2>
+        {cost && <span className={`result-card-cost ${cost === 'Free' ? 'is-free' : ''}`}>
+          <span className="sr-only">Cost: </span>{cost}
+        </span>}
       </div>
-      <div className="card-meta">
-        {a.schedule && <span className="badge"><Icon.clock />{a.schedule.split(',')[0]}</span>}
-        {a.intensity && <span className="badge"><Icon.bolt />{a.intensity}</span>}
-        {(Array.isArray(a.type) ? a.type.length > 0 : !!a.type) && <span className="badge blue">{Array.isArray(a.type) ? a.type.join(', ') : a.type}</span>}
-        {a.dist != null && <span className="badge">{a.dist.toFixed(1)} mi away</span>}
+      {schedule && <div className="result-card-fact">
+        <Icon.clock />
+        <div><span className="sr-only">Schedule: </span>
+          {showDays && <span className="result-card-days">{a.daysOfWeek} · </span>}{schedule}
+        </div>
+      </div>}
+      {(venue || address || a.dist != null) && <div className="result-card-fact">
+        <Icon.pin />
+        <div>
+          {venue && <span>{venue}</span>}
+          {a.dist != null && <span className="result-card-distance">{venue ? ' · ' : ''}{a.dist.toFixed(1)} mi away</span>}
+          {address && address !== venue && <span className="result-card-address">{address}</span>}
+        </div>
+      </div>}
+      <div className="result-card-footer">
+        <span>{[a.format, a.intensity && `${a.intensity} intensity`].filter(Boolean).join(' · ')}</span>
+        <span className="result-card-details" aria-hidden="true">View details <span>→</span></span>
       </div>
     </li>
   )
@@ -1867,11 +1939,14 @@ function ActivityDetail({ id }) {
   const copyResetRef = useRef(null)
 
   useEffect(() => {
+    let current = true
     setLoading(true)
+    setError(null)
     fetchActivityById(id)
-      .then(setActivity)
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false))
+      .then(record => { if (current) setActivity(record) })
+      .catch(e => { if (current) setError(e.message) })
+      .finally(() => { if (current) setLoading(false) })
+    return () => { current = false }
   }, [id])
 
   useEffect(() => () => {
@@ -1886,7 +1961,7 @@ function ActivityDetail({ id }) {
   }, [activity])
 
   if (loading) return <div className="state-msg" role="status" style={{padding:'4rem'}}><div className="spinner" aria-hidden="true"/><p>Loading activity details…</p></div>
-  if (error) return (
+  if (error || !activity) return (
     <div className="state-msg state-msg-error" role="alert" style={{padding:'4rem'}}>
       <p><strong>We couldn't load this activity.</strong></p>
       <p style={{marginTop:'0.5rem',fontSize:'0.9rem'}}>The link may be out of date or the activity is no longer listed.</p>
@@ -1895,9 +1970,8 @@ function ActivityDetail({ id }) {
       </a>
     </div>
   )
-  if (!activity) return null
-
   const a = activity
+  const types = Array.isArray(a.type) ? a.type.join(' · ') : a.type
 
   // Derived view data — keeps the JSX below readable.
   const phones = splitPhones(a.phone)
@@ -1955,7 +2029,7 @@ function ActivityDetail({ id }) {
 
   return (
     <div>
-      <div className="detail-wrap">
+      <div className="detail-wrap listing-page">
         <div className="detail-topbar">
           <button className="detail-back" onClick={() => {
             // Preserve search context — go back if there's history, otherwise fall back to search
@@ -1976,22 +2050,73 @@ function ActivityDetail({ id }) {
           </span>
         </div>
 
-        <div className="detail-tags">
-          {(Array.isArray(a.type) ? a.type.length > 0 : !!a.type) && <span className="badge blue">{Array.isArray(a.type) ? a.type.join(', ') : a.type}</span>}
-          {a.format && <span className="badge">{a.format}</span>}
-          {a.status === 'Active' && <span className="badge green">Active</span>}
-        </div>
-
-        <h1 className="detail-title">{a.name}</h1>
-        {a.format === 'Virtual' ? (
-          <p className="detail-venue">🌐 Virtual Activity</p>
-        ) : a.location ? (
-          <p className="detail-venue"><span className="detail-venue-at">at </span>{a.location}</p>
-        ) : null}
+        <header className="listing-intro">
+          {types && <p className="listing-type">{types}</p>}
+          <h1 className="detail-title">{a.name}</h1>
+          {(a.format === 'Virtual' || a.location) && (
+            <p className="listing-venue"><Icon.pin /> {a.format === 'Virtual' ? 'Online activity' : a.location}</p>
+          )}
+          <div className="listing-meta">
+            {a.format && <span>{a.format}</span>}
+            {a.status === 'Active' && <span className="listing-active">Active</span>}
+          </div>
+        </header>
 
         <div className="detail-grid">
-          {/* Left column — schedule, location, contact, about */}
-          <div>
+          <aside aria-label={(registrationUrl || registrationEmail) ? 'Cost and registration' : 'Cost'}>
+            <div className="sidebar-card cost-register-card">
+              <h2 className="sidebar-card-title">Cost</h2>
+              <div className="cost-display">
+                {a.costCategory === 'Free' ? (
+                  <>
+                    <span className="cost-free">Free</span>
+                    {a.costDisplay && a.costDisplay !== 'Free' && <span className="cost-detail">{a.costDisplay}</span>}
+                  </>
+                ) : (
+                  <>
+                    {a.costDisplay && a.costCategory && String(a.costCategory).trim() !== String(a.costDisplay).trim() && (
+                      <span className="cost-category">{a.costCategory}</span>
+                    )}
+                    <span className="cost-detail">{a.costDisplay || a.costCategory || 'Contact the organizer for pricing'}</span>
+                  </>
+                )}
+              </div>
+
+              {registrationUrl && (
+                <a
+                  href={registrationUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="register-cta"
+                  aria-label={`Register for ${a.name} (opens in a new tab)`}
+                >
+                  <span>Register now</span>
+                  <span className="register-cta-arrow" aria-hidden="true">→</span>
+                  <ExtLink />
+                </a>
+              )}
+              {!registrationUrl && registrationEmail && (
+                <a
+                  href={`mailto:${registrationEmail}?subject=${encodeURIComponent('Sign-up: ' + a.name)}`}
+                  className="register-cta"
+                  aria-label={`Email ${registrationEmail} to register for ${a.name}`}
+                >
+                  <Icon.mail />
+                  <span>Email to register</span>
+                </a>
+              )}
+
+              {websiteUrl && (
+                <p className="more-info">
+                  {registrationUrl ? 'More info: ' : 'Learn more: '}
+                  <a href={websiteUrl} target="_blank" rel="noopener noreferrer">
+                    {getDisplayDomain(websiteUrl)}<ExtLink />
+                  </a>
+                </p>
+              )}
+            </div>
+          </aside>
+          <div className="listing-information">
             <section className="info-card" aria-labelledby="schedule-heading">
               <h2 id="schedule-heading">Schedule</h2>
               {scheduleGroups ? (
@@ -2008,13 +2133,23 @@ function ActivityDetail({ id }) {
                   ))}
                 </dl>
               ) : (
-                <Row label="Days & times" value={a.schedule} preserveNewlines />
+                <>
+                  <Row label="Days" value={a.daysOfWeek} />
+                  <Row label="Schedule" value={a.schedule} preserveNewlines />
+                </>
               )}
               <Row label="Time of day" value={a.timeOfDay} />
               <Row label="Intensity" value={a.intensity} />
               <Row label="Format" value={a.format} />
               <Row label="Caregiver friendly" value={a.caregiverFriendly} />
             </section>
+
+            {showHowToAttend && (
+              <section className="info-card" aria-labelledby="attend-heading">
+                <h2 id="attend-heading">How to attend</h2>
+                <div className="attend-content">{renderInstructionTextWithLinks(howToAttendText)}</div>
+              </section>
+            )}
 
             {(a.location || a.address || (a.format !== 'Virtual' && a.zip)) && (
               <section className="info-card" aria-labelledby="location-heading">
@@ -2087,67 +2222,6 @@ function ActivityDetail({ id }) {
               </section>
             )}
           </div>
-
-          {/* Right sidebar — cost & primary actions */}
-          <aside aria-label={registrationUrl ? 'Cost and registration' : 'Cost'}>
-            <div className="sidebar-card cost-register-card">
-              <h2 className="sidebar-card-title">Cost</h2>
-              <div className="cost-display">
-                {a.costCategory === 'Free' ? (
-                  <span className="cost-free">Free</span>
-                ) : (
-                  <>
-                    {a.costDisplay && a.costCategory && String(a.costCategory).trim() !== String(a.costDisplay).trim() && (
-                      <span className="cost-category">{a.costCategory}</span>
-                    )}
-                    <span className="cost-detail">{a.costDisplay || a.costCategory || '—'}</span>
-                  </>
-                )}
-              </div>
-
-              {registrationUrl && (
-                <a
-                  href={registrationUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="register-cta"
-                  aria-label={`Register for ${a.name} (opens in a new tab)`}
-                >
-                  <span>Register now</span>
-                  <span className="register-cta-arrow" aria-hidden="true">→</span>
-                  <ExtLink />
-                </a>
-              )}
-              {!registrationUrl && registrationEmail && (
-                <a
-                  href={`mailto:${registrationEmail}?subject=${encodeURIComponent('Sign-up: ' + a.name)}`}
-                  className="register-cta"
-                  aria-label={`Email ${registrationEmail} to register for ${a.name}`}
-                >
-                  <Icon.mail />
-                  <span>Email to register</span>
-                </a>
-              )}
-
-              {websiteUrl && (
-                <p className="more-info">
-                  {registrationUrl ? 'More info: ' : 'Learn more: '}
-                  <a href={websiteUrl} target="_blank" rel="noopener noreferrer">
-                    {getDisplayDomain(websiteUrl)}<ExtLink />
-                  </a>
-                </p>
-              )}
-
-              {showHowToAttend && (
-                <div className="attend-section">
-                  <h3 className="attend-title">How to attend</h3>
-                  <div className="attend-content">
-                    {renderInstructionTextWithLinks(howToAttendText)}
-                  </div>
-                </div>
-              )}
-            </div>
-          </aside>
         </div>
 
         <ReportIssueSection activity={a} />
@@ -2810,63 +2884,23 @@ function SubmitActivity() {
 const DISCLAIMER_KEY = 'mnpc_disclaimer_accepted'
 
 function DisclaimerModal({ onAccept }) {
-  const btnRef = useRef(null)
   const modalRef = useRef(null)
 
   useEffect(() => {
-    // Move focus to the accept button so keyboard users start in the modal
-    if (btnRef.current) btnRef.current.focus()
-    // Prevent background scrolling while the modal is up
-    const prevOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-
-    // Focus trap: keep Tab/Shift+Tab cycling inside the modal.
-    // Esc accepts the disclaimer (the only available action).
-    const handleKey = (e) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        onAccept()
-        return
-      }
-      if (e.key !== 'Tab' || !modalRef.current) return
-      const focusables = modalRef.current.querySelectorAll(
-        'a[href], button:not([disabled]), input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])'
-      )
-      if (focusables.length === 0) return
-      const first = focusables[0]
-      const last = focusables[focusables.length - 1]
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault()
-        last.focus()
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault()
-        first.focus()
-      }
-    }
-    document.addEventListener('keydown', handleKey)
-    return () => {
-      document.removeEventListener('keydown', handleKey)
-      document.body.style.overflow = prevOverflow
-    }
-  }, [onAccept])
+    const dialog = modalRef.current
+    dialog.showModal()
+    return () => dialog.close()
+  }, [])
 
   return (
-    <div
-      className="disclaimer-overlay"
-      role="dialog"
-      aria-modal="true"
+    <dialog
+      ref={modalRef}
+      className="disclaimer-modal"
+      onCancel={event => event.preventDefault()}
       aria-labelledby="disclaimer-title"
-      aria-describedby="disclaimer-body"
     >
-      <div ref={modalRef} className="disclaimer-modal">
-        <div className="disclaimer-icon" aria-hidden="true">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="10"/>
-            <line x1="12" y1="16" x2="12" y2="12"/>
-            <line x1="12" y1="8" x2="12.01" y2="8"/>
-          </svg>
-        </div>
-        <h2 id="disclaimer-title">Important Notice</h2>
+        <p className="disclaimer-brand">MN Parkinson’s Connect</p>
+        <h2 id="disclaimer-title" tabIndex={-1} autoFocus>Before you explore</h2>
         <div id="disclaimer-body" className="disclaimer-body">
           <p>
             The information on this website, including listings and descriptions of exercise programs
@@ -2882,14 +2916,12 @@ function DisclaimerModal({ onAccept }) {
           </p>
         </div>
         <button
-          ref={btnRef}
           className="btn-accept"
           onClick={onAccept}
         >
           I Understand — Continue
         </button>
-      </div>
-    </div>
+    </dialog>
   )
 }
 
@@ -2900,6 +2932,7 @@ export default function App() {
   const hash = useRoute()
   const { path, params } = parseHash(hash)
   const mainRef = useRef(null)
+  const previousPath = useRef(path)
 
   const handleAcceptDisclaimer = useCallback(() => {
     try { localStorage.setItem(DISCLAIMER_KEY, 'true') } catch {}
@@ -2913,8 +2946,10 @@ export default function App() {
   useEffect(() => {
     if (disclaimerAccepted && mainRef.current) {
       mainRef.current.focus({ preventScroll: true })
+      if (previousPath.current !== path) window.scrollTo({ top: 0, behavior: 'instant' })
     }
-  }, [hash, disclaimerAccepted])
+    previousPath.current = path
+  }, [path, disclaimerAccepted])
 
   // WCAG 2.4.2 — update page title on route change
   useEffect(() => {
@@ -2950,7 +2985,12 @@ export default function App() {
 
   return (
     <>
-      <a href="#main-content" className="skip-link">
+      <a href="#main-content" className="skip-link" onClick={event => {
+        // The hash belongs to the router. Stay on the current page when skipping the nav.
+        event.preventDefault()
+        mainRef.current?.focus()
+        mainRef.current?.scrollIntoView({ block: 'start', behavior: 'instant' })
+      }}>
         Skip to main content
       </a>
       <Nav />
